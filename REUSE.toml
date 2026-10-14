@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
+# SPDX-License-Identifier: Apache-2.0
+
+# Licensing for files that can't carry an SPDX header (https://reuse.software).
+version = 1
+
+[[annotations]]
+path = ["src/model/**"]
+SPDX-FileCopyrightText = "2019 Google LLC, Andrew Hines"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["src/gpu/generated/**", "zimt/test/generated/**"]
+SPDX-FileCopyrightText = "2026 J. Dekker <jdek@itanimul.li>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["**.md", "flake.lock"]
+SPDX-FileCopyrightText = "2026 J. Dekker <jdek@itanimul.li>"
+SPDX-License-Identifier = "Apache-2.0"

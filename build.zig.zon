@@ -1,0 +1,20 @@
+// SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
+// SPDX-License-Identifier: Apache-2.0
+
+.{
+    .name = .akvisqol,
+    .version = "0.1.0",
+    .fingerprint = 0x3353cbbd185979e0,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .zimt = .{ .path = "zimt" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "zimt",
+        "LICENSES",
+        "README.md",
+    },
+}

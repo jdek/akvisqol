@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
+# SPDX-License-Identifier: Apache-2.0
+
+# Zig
+.zig-cache/
+zig-cache/
+zig-out/
+
+# Conformance audio (tests/fetch_data.sh)
+/tests/data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.venv/
+/src/python/visqol/_lib/
+/result*

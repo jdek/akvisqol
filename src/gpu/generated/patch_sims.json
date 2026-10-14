@@ -1,0 +1,403 @@
+{
+    "version": "1.1",
+    "parameters": [
+
+    ],
+    "globalScope": {
+        "kind": "none",
+        "parameters": [
+
+        ]
+    },
+    "entryPoints": [
+        {
+            "name": "patch_sims",
+            "stage": "compute",
+            "scope": {
+                "kind": "constantBuffer",
+                "binding": {"kind": "constantBuffer", "index": 0},
+                "parameters": [
+                    {
+                        "name": "tid",
+                        "semanticName": "SV_DISPATCHTHREADID",
+                        "type": {
+                            "kind": "vector",
+                            "elementCount": 3,
+                            "elementType": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "sizes": [
+
+                            ]
+                        }
+                    },
+                    {
+                        "name": "ref_spec",
+                        "binding": {"kind": "constantBuffer", "index": 0},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "deg_spec",
+                        "binding": {"kind": "constantBuffer", "index": 1},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "rows",
+                        "binding": {"kind": "constantBuffer", "index": 2},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "uint32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "out_base",
+                        "binding": {"kind": "constantBuffer", "index": 3},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "uint32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "mu_ref",
+                        "binding": {"kind": "constantBuffer", "index": 4},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "srs_ref",
+                        "binding": {"kind": "constantBuffer", "index": 5},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "out",
+                        "binding": {"kind": "constantBuffer", "index": 6},
+                        "type": {
+                            "kind": "resource",
+                            "baseShape": "structuredBuffer",
+                            "access": "readWrite",
+                            "resultType": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "sizes": [
+                                {"kind": "constantBuffer", "value": 1}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "num_rows",
+                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "num_tasks",
+                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "num_bands",
+                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "patch_size",
+                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    }
+                ]
+            },
+            "parameters": [
+                {
+                    "name": "tid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        },
+                        "sizes": [
+
+                        ]
+                    }
+                },
+                {
+                    "name": "ref_spec",
+                    "binding": {"kind": "constantBuffer", "index": 1},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "deg_spec",
+                    "binding": {"kind": "constantBuffer", "index": 2},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "rows",
+                    "binding": {"kind": "constantBuffer", "index": 3},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "out_base",
+                    "binding": {"kind": "constantBuffer", "index": 4},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "mu_ref",
+                    "binding": {"kind": "constantBuffer", "index": 5},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "srs_ref",
+                    "binding": {"kind": "constantBuffer", "index": 6},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "out",
+                    "binding": {"kind": "constantBuffer", "index": 7},
+                    "type": {
+                        "kind": "resource",
+                        "baseShape": "structuredBuffer",
+                        "access": "readWrite",
+                        "resultType": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        },
+                        "sizes": [
+                            {"kind": "constantBuffer", "value": 1}
+                        ]
+                    }
+                },
+                {
+                    "name": "num_rows",
+                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "num_tasks",
+                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "num_bands",
+                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "patch_size",
+                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                }
+            ],
+            "threadGroupSize": [64, 1, 1],
+            "bindings": [
+
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 1
+}
