@@ -215,6 +215,11 @@ pub fn resolveMetal(b: *std.Build, requested: ?bool, os: std.Target.Os.Tag) bool
 const XcrunResult = union(enum) { ok: []const u8, failed: []const u8 };
 
 fn runXcrun(b: *std.Build, args: []const []const u8) XcrunResult {
+    // Comptime-dead elsewhere: the build runner links libc only on macOS.
+    return if (@import("builtin").os.tag == .macos) runXcrunMacos(b, args) else .{ .failed = "xcrun needs a macOS host" };
+}
+
+fn runXcrunMacos(b: *std.Build, args: []const []const u8) XcrunResult {
     const io = b.graph.io;
     var env = b.graph.environ_map.clone(b.allocator) catch @panic("OOM");
     for (xcrun_unset_env) |k| _ = env.swapRemove(k);
