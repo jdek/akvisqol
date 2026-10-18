@@ -180,9 +180,9 @@ Xcode.
   index from `zimt_index(tid)` rather than `tid.x`, and
   bounds-check it.
 - **Access:** each buffer parameter's reflected access (`read`, `write`
-  or `read_write`) is in `K.params`. No backend uses it yet: Vulkan puts
-  a full memory barrier before every command. It is there for eliding
-  barriers later.
+  or `read_write`) is in `K.params`. Vulkan uses it to order commands
+  (see [Vulkan](#vulkan)); Metal and CUDA order dispatches themselves.
+  Slang reflects every `RWStructuredBuffer` as `read_write`.
 - **Threads:** a `Device` is not thread-safe, so serialise access to it.
 
 ## Vulkan
@@ -207,5 +207,11 @@ pools.
   `VK_LAYER_KHRONOS_validation` with synchronisation validation. Errors
   are logged and fail the next `submit`, `wait` or transfer; a missing
   layer fails `Device.open` loudly (set `VK_LAYER_PATH`).
+- **Barriers** come from each kernel's reflected accesses, resolved at
+  comptime into the buffers it reads and writes. A command gets a barrier
+  only if it reads or writes bytes written since the last barrier, or
+  writes bytes read since then (buffers sharing a block don't conflict);
+  independent commands, copies and fills run back to back. Every
+  submission ends with a full barrier.
 - **Releasing a kernel** while submitted work is outstanding waits for
   the queue first.

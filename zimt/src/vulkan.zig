@@ -169,6 +169,9 @@ const State = struct {
     mapped_type: ?u32 = null,
     staging_type: u32 = 0,
     recording: c.VkCommandBuffer = null,
+    /// Since the last barrier in `recording` (see `order`).
+    written: Hazards = .{},
+    read: Hazards = .{},
     /// Capacity covers all `cb_count`, so recycling can't fail.
     free_cbs: std.ArrayList(c.VkCommandBuffer) = .empty,
     cb_count: usize = 0,
@@ -722,6 +725,59 @@ fn blockRec(blk: *const zimt.Block) *BlockRec {
     return @ptrFromInt(blk.raw.handle);
 }
 
+const Range = struct {
+    buffer: c.VkBuffer,
+    lo: u64,
+    hi: u64,
+
+    fn of(span: zimt.Span) Range {
+        return .{ .buffer = blockRec(span.block).buffer, .lo = span.offset, .hi = span.offset + span.len };
+    }
+
+    fn overlaps(a: Range, b: Range) bool {
+        return a.buffer == b.buffer and a.lo < b.hi and b.lo < a.hi;
+    }
+};
+
+/// When full it covers everything.
+const Hazards = struct {
+    items: [32]Range = undefined,
+    len: usize = 0,
+    full: bool = false,
+
+    fn hits(h: *const Hazards, r: Range) bool {
+        if (h.full) return true;
+        for (h.items[0..h.len]) |x| if (x.overlaps(r)) return true;
+        return false;
+    }
+
+    fn add(h: *Hazards, r: Range) void {
+        if (h.len == h.items.len) {
+            h.full = true;
+            return;
+        }
+        h.items[h.len] = r;
+        h.len += 1;
+    }
+};
+
+/// A barrier only if the command touches bytes written since the last one,
+/// or writes bytes read since then. Submissions end with a full barrier.
+fn order(st: *State, cb: c.VkCommandBuffer, reads: []const Range, writes: []const Range) void {
+    const hazard = for (reads) |r| {
+        if (st.written.hits(r)) break true;
+    } else for (writes) |r| {
+        if (st.written.hits(r) or st.read.hits(r)) break true;
+    } else false;
+    if (hazard) {
+        barrier(st, cb);
+        st.written = .{};
+        st.read = .{};
+    }
+    for (reads) |r| st.read.add(r);
+    for (writes) |r| st.written.add(r);
+}
+
 /// Includes host reads after the submission completes.
 fn barrier(st: *State, cb: c.VkCommandBuffer) void {
     const stages = c.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | c.VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -762,14 +818,18 @@ fn recycle(st: *State, cb: c.VkCommandBuffer) void {
 }
 
 fn recording(st: *State) !c.VkCommandBuffer {
-    if (st.recording == null) st.recording = try acquireCb(st);
+    if (st.recording == null) {
+        st.recording = try acquireCb(st);
+        st.written = .{};
+        st.read = .{};
+    }
     return st.recording;
 }
 
 pub fn copy(d: *zimt.Device, src: zimt.Span, dst: zimt.Span) !void {
     const st = state(d);
     const cb = try recording(st);
-    barrier(st, cb);
+    order(st, cb, &.{Range.of(src)}, &.{Range.of(dst)});
     const region: c.VkBufferCopy = .{ .srcOffset = src.offset, .dstOffset = dst.offset, .size = src.len };
     st.dev.vkCmdCopyBuffer(cb, blockRec(src.block).buffer, blockRec(dst.block).buffer, 1, &region);
 }
@@ -777,7 +837,7 @@ pub fn copy(d: *zimt.Device, src: zimt.Span, dst: zimt.Span) !void {
 pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     const st = state(d);
     const cb = try recording(st);
-    barrier(st, cb);
+    order(st, cb, &.{}, &.{Range.of(dst)});
     st.dev.vkCmdFillBuffer(cb, blockRec(dst.block).buffer, dst.offset, dst.len, 0);
 }
 
@@ -790,7 +850,12 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         return zimt.Error.DeviceError;
     };
     const cb = try recording(st);
-    barrier(st, cb);
+    const acc = comptime accesses(K);
+    var reads: [acc.reads.len]Range = undefined;
+    var writes: [acc.writes.len]Range = undefined;
+    inline for (acc.reads, &reads) |name, *r| r.* = Range.of(@field(args, name).mem.span(0, @field(args, name).mem.size));
+    inline for (acc.writes, &writes) |name, *r| r.* = Range.of(@field(args, name).mem.span(0, @field(args, name).mem.size));
+    order(st, cb, &reads, &writes);
     st.dev.vkCmdBindPipeline(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.pipeline);
 
     const n_buf = comptime zimt.bufferCount(K);
@@ -820,6 +885,20 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         st.dev.vkCmdPushConstants(cb, kr.layout, c.VK_SHADER_STAGE_COMPUTE_BIT, 0, K.uniform_size, &words);
     }
     st.dev.vkCmdDispatch(cb, groups[0], groups[1], groups[2]);
+}
+
+/// `read_write` parameters are in both.
+fn accesses(comptime K: type) struct { reads: []const []const u8, writes: []const []const u8 } {
+    var reads: []const []const u8 = &.{};
+    var writes: []const []const u8 = &.{};
+    for (K.params) |p| switch (p.binding) {
+        .buffer => |b| {
+            if (b.access != .write) reads = reads ++ .{p.name};
+            if (b.access != .read) writes = writes ++ .{p.name};
+        },
+        .uniform => {},
+    };
+    return .{ .reads = reads, .writes = writes };
 }
 
 pub fn submit(d: *zimt.Device) !usize {
