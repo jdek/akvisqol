@@ -152,21 +152,19 @@ fn runBatch(
 
     const audios = try allocator.alloc([2]audio.Audio, names.items.len);
     defer allocator.free(audios);
-    var loaded: usize = 0;
-    defer for (audios[0..loaded]) |*a| {
+    const load_errs = try allocator.alloc(?anyerror, names.items.len);
+    defer allocator.free(load_errs);
+    try loadAll(allocator, names.items, audios, load_errs, threads);
+    defer for (audios, load_errs) |*a, e| if (e == null) {
         a[0].deinit();
         a[1].deinit();
     };
+    // The first failure in CSV order.
+    for (load_errs) |e| if (e) |err| return err;
     const pairs = try allocator.alloc(backend.Pair, names.items.len);
     defer allocator.free(pairs);
     var sample_rate: u32 = 0;
-    for (names.items, audios, pairs) |n, *a, *p| {
-        a[0] = try audio.loadAsMono(allocator, n[0]);
-        a[1] = audio.loadAsMono(allocator, n[1]) catch |e| {
-            a[0].deinit();
-            return e;
-        };
-        loaded += 1;
+    for (audios, pairs) |*a, *p| {
         if (sample_rate == 0) sample_rate = a[0].sample_rate;
         if (a[0].sample_rate != sample_rate or a[1].sample_rate != sample_rate)
             return fail(out, "batch mode requires every file to share one sample rate");
@@ -194,6 +192,48 @@ fn runBatch(
         }
     }
     if (results_csv) |p| try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = csv_out.items });
+}
+
+/// `threads` 0: all cores.
+fn loadAll(allocator: std.mem.Allocator, names: []const [2][]const u8, audios: [][2]audio.Audio, errs: []?anyerror, threads: u32) !void {
+    const Loader = struct {
+        allocator: std.mem.Allocator,
+        names: []const [2][]const u8,
+        audios: [][2]audio.Audio,
+        errs: []?anyerror,
+        next: std.atomic.Value(usize) = .init(0),
+
+        fn run(l: *@This()) void {
+            while (true) {
+                const i = l.next.fetchAdd(1, .monotonic);
+                if (i >= l.names.len) return;
+                l.errs[i] = null;
+                const ref = audio.loadAsMono(l.allocator, l.names[i][0]) catch |e| {
+                    l.errs[i] = e;
+                    continue;
+                };
+                const deg = audio.loadAsMono(l.allocator, l.names[i][1]) catch |e| {
+                    var r = ref;
+                    r.deinit();
+                    l.errs[i] = e;
+                    continue;
+                };
+                l.audios[i] = .{ ref, deg };
+            }
+        }
+    };
+    var loader: Loader = .{ .allocator = allocator, .names = names, .audios = audios, .errs = errs };
+    const want: usize = if (threads == 0) std.Thread.getCpuCount() catch 1 else threads;
+    const spawn = @min(want, names.len) -| 1;
+    const pool = try allocator.alloc(std.Thread, spawn);
+    defer allocator.free(pool);
+    var started: usize = 0;
+    defer for (pool[0..started]) |t| t.join();
+    for (pool) |*t| {
+        t.* = std.Thread.spawn(.{}, Loader.run, .{&loader}) catch break;
+        started += 1;
+    }
+    loader.run();
 }
 
 fn printResult(out: *std.Io.Writer, rp: []const u8, dp: []const u8, r: *const visqol.Result, verbose: bool) !void {
