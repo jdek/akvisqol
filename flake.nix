@@ -18,6 +18,14 @@
         ];
       };
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
+      # Python test deps, and numba for visqol-python. No ai-edge-litert: its
+      # x86_64 wheel reads up to ~6e-5 off its macOS builtin kernels.
+      pythonTest = pkgs: pkgs.python3.withPackages (ps: with ps; [ numpy protobuf pytest numba ]);
+      # slangc compiles PTX through NVRTC (unfree).
+      nvrtcFor = system: (import nixpkgs {
+        inherit system;
+        config.allowUnfreePredicate = p: nixpkgs.lib.getName p == "cuda_nvrtc";
+      }).cudaPackages.cuda_nvrtc;
     in {
       # Tiers (README "Building"): 1 = akvisqol, 2 = akvisqol-cpp, 3 = benchmarks.
       packages = forAllSystems (pkgs: let googlePython = googlePythonFor pkgs; in rec {
@@ -34,14 +42,26 @@
         visqol-cpp-bench = pkgs.callPackage ./tests/bench/visqol-cpp/package.nix { visqol = akvisqol; };
       });
 
-      devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShellNoCC {
-          packages = with pkgs; [ zig_0_17 shader-slang uv python3 ];
+      devShells = forAllSystems (pkgs: let
+        inherit (pkgs) lib;
+        linux = pkgs.stdenv.hostPlatform.isLinux;
+        vulkanLibs = lib.optionals linux [ pkgs.vulkan-loader ];
+        shell = { libs ? [ ] }: pkgs.mkShellNoCC {
+          packages = with pkgs; [ zig_0_17 shader-slang uv (pythonTest pkgs) ]
+            ++ lib.optionals linux [ vulkan-tools spirv-tools ];
+          LD_LIBRARY_PATH = lib.makeLibraryPath (vulkanLibs ++ libs);
+          VK_LAYER_PATH = lib.optionalString linux "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
           # Zig skips the macOS SDK when these are set.
           shellHook = ''
             unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
           '';
         };
+      in {
+        default = shell { };
+      } // lib.optionalAttrs linux {
+        # `nix develop .#cuda -c zig build test -Dcuda=true`
+        cuda = shell { libs = [ (nvrtcFor pkgs.stdenv.hostPlatform.system) ]; };
+      } // {
         cpp = pkgs.mkShell {
           packages = with pkgs; [ cmake abseil-cpp protobuf ];
         };

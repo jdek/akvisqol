@@ -187,8 +187,7 @@ nix develop                       # zig 0.17, slangc, uv
 tests/fetch_data.sh               # upstream conformance audio → tests/data/
 zig build test                    # unit + conformance (-Dmetal=false for CPU only)
 zig build python -Doptimize=ReleaseFast
-uv run --with numpy --with protobuf --with pytest --with ai-edge-litert \
-    env PYTHONPATH=src/python pytest src/python/tests
+PYTHONPATH=src/python python -m pytest src/python/tests   # the shell's numpy, protobuf, pytest
 zig build shaders                 # regenerate src/gpu/generated/ (needs slangc)
 zig build pb2                     # regenerate src/python/visqol/pb2
 ```
