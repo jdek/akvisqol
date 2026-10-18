@@ -110,7 +110,7 @@ b.step("shaders", "Regenerate MSL, SPIR-V + reflection").dependOn(zimt.addRegene
   The loader is `dlopen`ed (`libvulkan.so.1`, `vulkan-1.dll`). musl
   targets can't load it, so `-Dvulkan` fails the build there.
 - **Kernels `import zimt;`**, which zimt adds to the Slang include path
-  (zimt's `src/slang`), for `RO`/`RW` and `zimt_index`.
+  (zimt's `src/slang`), for `RO`/`RW`, `zimt_index` and `zimt_groups`.
 - **One entry point per kernel**: `.name` compiles `<name>.slang`'s
   `<name>`; `.source` and `.entry` pick another file and a specialized
   generic (`fft_pass<Radix16>`), so one generic kernel can be several.
@@ -180,12 +180,20 @@ Xcode.
   ragged ends.
 - **Backend interface:** `open`/`close`, `kernel`/`release`,
   `blockAlloc`/`blockFree` (with each block's device address), `budget`,
-  `copy` and `fill` between block ranges, `dispatch`, `submit`/`finish`. Everything else lives in `root.zig`.
+  `copy` and `fill` between block ranges, `dispatch` (direct or indirect
+  groups), `submit`/`finish`. Everything else lives in `root.zig`.
 - **`dispatch1d`** launches at least `n` threads. Up to 32768 groups it is
   a single row; beyond that it folds into rows of 32768 groups (Vulkan
   only guarantees 65535 groups per dimension), so kernels take their
   index from `zimt_index(tid)` rather than `tid.x`, and
   bounds-check it.
+- **Indirect dispatch:** `dispatchIndirect(k, groups, i, max, args)` runs
+  the groups a kernel wrote to `groups[i]` (a `Buffer([3]u32)`), at most
+  `max` per dimension, without the host reading them; `dispatchIndirect1d`
+  pairs with `zimt_groups(n, threads_x)` in a kernel and takes the most
+  threads `n` can be. Vulkan and Metal read the groups on the device. The
+  CUDA driver API has no indirect launch, so CUDA launches `max`: kernels
+  must bound-check against the count they read, not just the grid.
 - **Access:** each buffer parameter's access (`read` for `RO`,
   `read_write` for `RW`) is in `K.params`. Vulkan uses it to order
   commands (see [Vulkan](#vulkan)); Metal makes the buffers resident with
@@ -218,7 +226,8 @@ one); kernel arguments are push constants, so there are no descriptors.
 - **Barriers** come from each kernel's reflected accesses, resolved at
   comptime into the buffers it reads and writes. A command gets a barrier
   only if it reads or writes bytes written since the last barrier, or
-  writes bytes read since then (buffers sharing a block don't conflict);
+  writes bytes read since then (buffers sharing a block don't conflict;
+  indirect groups count as reads);
   independent commands, copies and fills run back to back. Every
   submission ends with a full barrier.
 - **Releasing a kernel** while submitted work is outstanding waits for

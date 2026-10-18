@@ -131,14 +131,19 @@ pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     try call(api.cuMemsetD8Async(dst.block.raw.handle + dst.offset, 0, dst.len, state(d).stream));
 }
 
-/// Each parameter points into the packed block.
-pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32, args: K.Args) !void {
+/// Each parameter points into the packed block. Indirect dispatches launch
+/// `max` groups: the driver API has no indirect launch.
+pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args) !void {
     try bind(d);
     var bytes align(8) = zimt.packArgs(K, args);
     var ptrs: [@max(K.params.len, 1)]?*anyopaque = undefined;
     inline for (K.params, 0..) |p, i| ptrs[i] = @ptrCast(&bytes[p.offset]);
+    const g = switch (groups) {
+        .direct => |g| g,
+        .indirect => |ind| ind.max,
+    };
     const t = K.threads;
-    try call(api.cuLaunchKernel(@ptrFromInt(handle), groups[0], groups[1], groups[2], t[0], t[1], t[2], 0, state(d).stream, &ptrs, null));
+    try call(api.cuLaunchKernel(@ptrFromInt(handle), g[0], g[1], g[2], t[0], t[1], t[2], 0, state(d).stream, &ptrs, null));
 }
 
 /// A submission is an event recorded on the stream.

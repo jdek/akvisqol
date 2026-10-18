@@ -28,9 +28,11 @@ void zimt_metal_memory(ZimtMetal *m, uint64_t *used, uint64_t *limit);
 void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents, uint64_t *addr);
 
 /* `bytes` binds at index 0; the kernel reaches buffers[i] through it, so
-   they are made resident (writes[i]: read-write). */
+   they are made resident (writes[i]: read-write). With `indirect`, the
+   groups are the three uint32_t at its `indirect_offset`. */
 int zimt_metal_dispatch(ZimtMetal *m, void *pipeline, const void *bytes, uint32_t nbytes,
                         void *const *buffers, const uint8_t *writes, uint32_t nbuffers,
+                        void *indirect, size_t indirect_offset,
                         const uint32_t groups[3], const uint32_t threads[3]);
 
 /* Non-blocking; returns the retained command buffer, or NULL if empty. */

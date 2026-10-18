@@ -202,6 +202,13 @@ pub fn packArgs(comptime K: type, args: K.Args) [K.arg_size]u8 {
     return bytes;
 }
 
+/// What a dispatch runs: a host-known grid, or one the device reads as
+/// `[3]u32` from `at` when the dispatch starts. CUDA can't, and launches `max`.
+pub const Groups = union(enum) {
+    direct: [3]u32,
+    indirect: struct { at: Span, max: [3]u32 },
+};
+
 pub fn Kernel(comptime K: type) type {
     comptime checkDef(K);
     return struct {
@@ -608,19 +615,42 @@ pub const Device = struct {
     /// Enqueue `k` over `groups` thread groups of `[numthreads]`.
     pub fn dispatch(self: *Device, k: anytype, groups: [3]u32, args: @TypeOf(k).Def.Args) !void {
         if (groups[0] == 0 or groups[1] == 0 or groups[2] == 0) return;
-        switch (self.which()) {
-            inline else => |b| if (comptime compiledIn(b)) try impl(b).dispatch(self, @TypeOf(k).Def, k.handle, groups, args) else unreachable,
-        }
-        self.dirty = true;
+        return self.dispatchGroups(k, .{ .direct = groups }, args);
     }
 
     /// Folds into rows of `row_groups` groups; kernels index with `zimt_index`.
     pub fn dispatch1d(self: *Device, k: anytype, n: usize, args: @TypeOf(k).Def.Args) !void {
-        const tx = @TypeOf(k).Def.threads[0];
-        const g = std.math.divCeil(usize, n, tx) catch unreachable;
-        if (g <= row_groups) return self.dispatch(k, .{ @intCast(g), 1, 1 }, args);
+        return self.dispatch(k, try fold(@TypeOf(k).Def, n), args);
+    }
+
+    /// Enqueue `k` over the groups in `groups[index]` when the device
+    /// reaches it, at most `max` in each dimension. Kernels bound-check
+    /// against a count they read: CUDA runs all of `max`.
+    pub fn dispatchIndirect(self: *Device, k: anytype, groups: Buffer([3]u32), index: usize, max: [3]u32, args: @TypeOf(k).Def.Args) !void {
+        std.debug.assert(index < groups.len);
+        if (max[0] == 0 or max[1] == 0 or max[2] == 0) return;
+        const at = groups.mem.span(index * @sizeOf([3]u32), @sizeOf([3]u32));
+        return self.dispatchGroups(k, .{ .indirect = .{ .at = at, .max = max } }, args);
+    }
+
+    /// `dispatchIndirect` for groups from `zimt_groups(n, K.threads[0])`,
+    /// with `n <= max_n`.
+    pub fn dispatchIndirect1d(self: *Device, k: anytype, groups: Buffer([3]u32), index: usize, max_n: usize, args: @TypeOf(k).Def.Args) !void {
+        return self.dispatchIndirect(k, groups, index, try fold(@TypeOf(k).Def, max_n), args);
+    }
+
+    fn fold(comptime K: type, n: usize) ![3]u32 {
+        const g = std.math.divCeil(usize, n, K.threads[0]) catch unreachable;
+        if (g <= row_groups) return .{ @intCast(g), 1, 1 };
         const rows = std.math.divCeil(usize, g, row_groups) catch unreachable;
-        return self.dispatch(k, .{ row_groups, std.math.cast(u32, rows) orelse return Error.DeviceError, 1 }, args);
+        return .{ row_groups, std.math.cast(u32, rows) orelse return Error.DeviceError, 1 };
+    }
+
+    fn dispatchGroups(self: *Device, k: anytype, groups: Groups, args: @TypeOf(k).Def.Args) !void {
+        switch (self.which()) {
+            inline else => |b| if (comptime compiledIn(b)) try impl(b).dispatch(self, @TypeOf(k).Def, k.handle, groups, args) else unreachable,
+        }
+        self.dirty = true;
     }
 
     /// Non-blocking. Returns the latest fence if nothing new was enqueued.

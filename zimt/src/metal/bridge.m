@@ -147,6 +147,7 @@ void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents, uint64_
 
 int zimt_metal_dispatch(ZimtMetal *m, void *pipeline, const void *bytes, uint32_t nbytes,
                         void *const *buffers, const uint8_t *writes, uint32_t nbuffers,
+                        void *indirect, size_t indirect_offset,
                         const uint32_t groups[3], const uint32_t threads[3]) {
     @autoreleasepool {
         if (!m->cmdbuf) {
@@ -169,8 +170,14 @@ int zimt_metal_dispatch(ZimtMetal *m, void *pipeline, const void *bytes, uint32_
             [enc useResource:(__bridge id<MTLBuffer>)buffers[i]
                        usage:(writes[i] ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead)];
         }
-        [enc dispatchThreadgroups:MTLSizeMake(groups[0], groups[1], groups[2])
-            threadsPerThreadgroup:MTLSizeMake(threads[0], threads[1], threads[2])];
+        MTLSize tg = MTLSizeMake(threads[0], threads[1], threads[2]);
+        if (indirect) {
+            [enc dispatchThreadgroupsWithIndirectBuffer:(__bridge id<MTLBuffer>)indirect
+                                   indirectBufferOffset:indirect_offset
+                                  threadsPerThreadgroup:tg];
+        } else {
+            [enc dispatchThreadgroups:MTLSizeMake(groups[0], groups[1], groups[2]) threadsPerThreadgroup:tg];
+        }
         return 0;
     }
 }

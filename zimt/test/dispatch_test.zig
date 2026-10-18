@@ -381,3 +381,62 @@ test "float3 buffers share one layout on every backend" {
         }
     }.f);
 }
+
+test "indirect dispatch over a list the device built" {
+    try eachDevice(struct {
+        fn f(dev: *zimt.Device) !void {
+            const a = std.testing.allocator;
+            const compact = try dev.kernel(kernels.compact);
+            defer dev.release(compact);
+            const plan = try dev.kernel(kernels.plan);
+            defer dev.release(plan);
+            const scale = try dev.kernel(kernels.scale_listed);
+            defer dev.release(scale);
+            // Over 32768 groups of the list: the planned grid folds.
+            const n = 4_500_000;
+            const x = try a.alloc(f32, n);
+            defer a.free(x);
+            var prng: std.Random.DefaultPrng = .init(1);
+            for (x) |*v| v.* = @floatFromInt(prng.random().intRangeAtMost(i32, -2, 3));
+            const dx = try dev.allocInit(f32, x);
+            defer dev.free(dx);
+            const list = try dev.alloc(u32, .device, n);
+            defer dev.free(list);
+            const count = try dev.alloc(u32, .device, 1);
+            defer dev.free(count);
+            const groups = try dev.alloc([3]u32, .device, 2);
+            defer dev.free(groups);
+            const th = kernels.scale_listed.threads[0];
+            // Nothing positive: zero groups.
+            const none = try dev.allocInit(f32, &.{ -1, 0, -3 });
+            defer dev.free(none);
+            try dev.zero(count, 0, 1);
+            try dev.dispatch1d(compact, 3, .{ .x = none, .list = list, .count = count, .n = 3 });
+            try dev.dispatch(plan, .{ 1, 1, 1 }, .{ .count = count, .groups = groups, .threads_x = th });
+            try dev.dispatchIndirect1d(scale, groups, 0, 3, .{ .list = list, .count = count, .x = none, .s = 10 });
+            var got3: [3]f32 = undefined;
+            try dev.download(none, 0, &got3);
+            try std.testing.expectEqualSlices(f32, &.{ -1, 0, -3 }, &got3);
+
+            try dev.zero(count, 0, 1);
+            try dev.dispatch1d(compact, n, .{ .x = dx, .list = list, .count = count, .n = n });
+            try dev.dispatch(plan, .{ 1, 1, 1 }, .{ .count = count, .groups = groups, .threads_x = th });
+            try dev.dispatchIndirect1d(scale, groups, 0, n, .{ .list = list, .count = count, .x = dx, .s = 10 });
+            var g: [1][3]u32 = undefined;
+            try dev.download(groups, 0, &g);
+            var c: [1]u32 = undefined;
+            try dev.download(count, 0, &c);
+            const want_groups = (c[0] + th - 1) / th;
+            try std.testing.expectEqual([3]u32{ zimt.row_groups, (want_groups + zimt.row_groups - 1) / zimt.row_groups, 1 }, g[0]);
+            const out = try a.alloc(f32, n);
+            defer a.free(out);
+            try dev.download(dx, 0, out);
+            var positive: u32 = 0;
+            for (out, x) |o, v| {
+                positive += @intFromBool(v > 0);
+                try std.testing.expectEqual(if (v > 0) v * 10 else v, o);
+            }
+            try std.testing.expectEqual(positive, c[0]);
+        }
+    }.f);
+}

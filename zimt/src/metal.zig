@@ -21,6 +21,8 @@ extern fn zimt_metal_dispatch(
     buffers: [*]const ?*anyopaque,
     writes: [*]const u8,
     nbuffers: u32,
+    indirect: ?*anyopaque,
+    indirect_offset: usize,
     groups: *const [3]u32,
     threads: *const [3]u32,
 ) c_int;
@@ -101,7 +103,7 @@ pub fn fill(_: *zimt.Device, _: zimt.Span) !void {
 }
 
 /// The argument block binds at index 0 (bindgen checks).
-pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32, args: K.Args) !void {
+pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args) !void {
     const n_buf = comptime blk: {
         var n: usize = 0;
         for (K.params) |p| n += @intFromBool(p.kind == .buffer);
@@ -119,6 +121,11 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         .value => {},
     };
     const bytes = zimt.packArgs(K, args);
+    const direct: [3]u32 = switch (groups) {
+        .direct => |g| g,
+        .indirect => .{ 0, 0, 0 },
+    };
+    const indirect: ?zimt.Span = if (groups == .indirect) groups.indirect.at else null;
     const rc = zimt_metal_dispatch(
         bridge(d),
         @ptrFromInt(handle),
@@ -127,7 +134,9 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         &bufs,
         &writes,
         @intCast(n_buf),
-        &groups,
+        if (indirect) |at| @ptrFromInt(at.block.raw.handle) else null,
+        if (indirect) |at| at.offset else 0,
+        &direct,
         &K.threads,
     );
     if (rc != 0) return zimt.Error.DeviceError;

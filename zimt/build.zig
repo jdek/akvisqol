@@ -106,6 +106,9 @@ pub fn build(b: *std.Build) void {
 const test_entries = [_]Entry{
     .{ .name = "saxpy" },
     .{ .name = "scale3" },
+    .{ .name = "compact", .source = "indirect" },
+    .{ .name = "plan", .source = "indirect" },
+    .{ .name = "scale_listed", .source = "indirect" },
 };
 
 /// Null until the lazy dependency is fetched.

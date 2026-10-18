@@ -73,6 +73,7 @@ const DeviceFns = struct {
     vkCmdBindPipeline: Pfn("vkCmdBindPipeline"),
     vkCmdPushConstants: Pfn("vkCmdPushConstants"),
     vkCmdDispatch: Pfn("vkCmdDispatch"),
+    vkCmdDispatchIndirect: Pfn("vkCmdDispatchIndirect"),
     vkGetBufferDeviceAddress: Pfn("vkGetBufferDeviceAddress"),
     vkCmdPipelineBarrier: Pfn("vkCmdPipelineBarrier"),
     vkCmdCopyBuffer: Pfn("vkCmdCopyBuffer"),
@@ -616,7 +617,8 @@ fn createBlock(st: *State, size: u64, type_index: ?u32) !*BlockRec {
     const info: c.VkBufferCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = size,
-        .usage = c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .usage = c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | c.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+            c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
     };
     try check(st.dev.vkCreateBuffer(st.device, &info, null, &rec.buffer), "vkCreateBuffer");
@@ -753,13 +755,13 @@ fn order(st: *State, cb: c.VkCommandBuffer, reads: []const Range, writes: []cons
     for (writes) |r| st.written.add(r);
 }
 
-/// Includes host reads after the submission completes.
+/// Includes indirect group reads, and host reads after the submission completes.
 fn barrier(st: *State, cb: c.VkCommandBuffer) void {
-    const stages = c.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | c.VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const stages = c.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | c.VK_PIPELINE_STAGE_TRANSFER_BIT | c.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
     const mb: c.VkMemoryBarrier = .{
         .sType = c.VK_STRUCTURE_TYPE_MEMORY_BARRIER,
         .srcAccessMask = c.VK_ACCESS_SHADER_WRITE_BIT | c.VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT | c.VK_ACCESS_SHADER_WRITE_BIT |
+        .dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT | c.VK_ACCESS_SHADER_WRITE_BIT | c.VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
             c.VK_ACCESS_TRANSFER_READ_BIT | c.VK_ACCESS_TRANSFER_WRITE_BIT | c.VK_ACCESS_HOST_READ_BIT,
     };
     st.dev.vkCmdPipelineBarrier(cb, stages, stages | c.VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, null, 0, null);
@@ -816,27 +818,36 @@ pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     st.dev.vkCmdFillBuffer(cb, blockRec(dst.block).buffer, dst.offset, dst.len, 0);
 }
 
-pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32, args: K.Args) !void {
+pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args) !void {
     const st = state(d);
     const kr: *KernelRec = @ptrFromInt(handle);
-    // dispatch1d keeps within the guaranteed 65535.
-    for (groups, st.limits.maxComputeWorkGroupCount) |n, max| if (n > max) {
-        log.err("kernel '{s}': {any} groups exceed maxComputeWorkGroupCount {any}", .{ K.name, groups, st.limits.maxComputeWorkGroupCount });
+    // dispatch1d and zimt_groups keep within the guaranteed 65535.
+    const g = switch (groups) {
+        .direct => |g| g,
+        .indirect => |ind| ind.max,
+    };
+    for (g, st.limits.maxComputeWorkGroupCount) |n, max| if (n > max) {
+        log.err("kernel '{s}': {any} groups exceed maxComputeWorkGroupCount {any}", .{ K.name, g, st.limits.maxComputeWorkGroupCount });
         return zimt.Error.DeviceError;
     };
     const cb = try recording(st);
     const acc = comptime accesses(K);
-    var reads: [acc.reads.len]Range = undefined;
+    // The indirect groups are read too.
+    var reads: [acc.reads.len + 1]Range = undefined;
     var writes: [acc.writes.len]Range = undefined;
-    inline for (acc.reads, &reads) |name, *r| r.* = Range.of(@field(args, name).mem.span(0, @field(args, name).mem.size));
+    inline for (acc.reads, reads[0..acc.reads.len]) |name, *r| r.* = Range.of(@field(args, name).mem.span(0, @field(args, name).mem.size));
     inline for (acc.writes, &writes) |name, *r| r.* = Range.of(@field(args, name).mem.span(0, @field(args, name).mem.size));
-    order(st, cb, &reads, &writes);
+    if (groups == .indirect) reads[acc.reads.len] = Range.of(groups.indirect.at);
+    order(st, cb, reads[0 .. acc.reads.len + @intFromBool(groups == .indirect)], &writes);
     st.dev.vkCmdBindPipeline(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.pipeline);
     if (K.arg_size > 0) {
         const bytes = zimt.packArgs(K, args);
         st.dev.vkCmdPushConstants(cb, kr.layout, c.VK_SHADER_STAGE_COMPUTE_BIT, 0, K.arg_size, &bytes);
     }
-    st.dev.vkCmdDispatch(cb, groups[0], groups[1], groups[2]);
+    switch (groups) {
+        .direct => st.dev.vkCmdDispatch(cb, g[0], g[1], g[2]),
+        .indirect => |ind| st.dev.vkCmdDispatchIndirect(cb, blockRec(ind.at.block).buffer, ind.at.offset),
+    }
 }
 
 fn accesses(comptime K: type) struct { reads: []const []const u8, writes: []const []const u8 } {
