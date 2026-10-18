@@ -179,6 +179,11 @@ patch-similarity matrix, and the alignment cross-correlation.
 on [zimt](zimt/README.md), a standalone Slang compute runtime that
 generates typed Zig bindings from Slang reflection.
 
+Batches spread over several GPU lanes (zimt devices: streams on CUDA,
+queues on Vulkan and Metal) so worker threads overlap their transfers and
+kernels; up to 4 on CUDA and 2 elsewhere, `VISQOL_GPU_LANES=N` to change.
+Alignment lag peaks are found on the GPU and only candidates return.
+
 GPU kernels are f32; normalisation, DP, statistics and quality mapping
 stay f64 on the CPU. Gammatone filters run in delta form (direct form
 loses ~1e-3 relative accuracy in the 50 Hz band in f32), and alignment

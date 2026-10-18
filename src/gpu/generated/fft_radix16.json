@@ -11,7 +11,7 @@
     },
     "entryPoints": [
         {
-            "name": "fft_radix16",
+            "name": "fft_pass",
             "stage": "compute",
             "scope": {
                 "kind": "constantBuffer",
@@ -275,6 +275,16 @@
             ],
             "threadGroupSize": [64, 1, 1],
             "bindings": [
+
+            ]
+        }
+    ],
+    "typeParams":
+    [
+        {
+            "name": "T",
+            "constraints": 
+            [
 
             ]
         }

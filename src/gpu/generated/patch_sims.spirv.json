@@ -87,26 +87,8 @@
                         }
                     },
                     {
-                        "name": "out_base",
-                        "binding": {"kind": "descriptorTableSlot", "index": 3},
-                        "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "uint32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
-                            "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
-                            ]
-                        }
-                    },
-                    {
                         "name": "mu_ref",
-                        "binding": {"kind": "descriptorTableSlot", "index": 4},
+                        "binding": {"kind": "descriptorTableSlot", "index": 3},
                         "type": {
                             "kind": "resource",
                             "baseShape": "structuredBuffer",
@@ -124,7 +106,7 @@
                     },
                     {
                         "name": "srs_ref",
-                        "binding": {"kind": "descriptorTableSlot", "index": 5},
+                        "binding": {"kind": "descriptorTableSlot", "index": 4},
                         "type": {
                             "kind": "resource",
                             "baseShape": "structuredBuffer",
@@ -142,7 +124,7 @@
                     },
                     {
                         "name": "out",
-                        "binding": {"kind": "descriptorTableSlot", "index": 6},
+                        "binding": {"kind": "descriptorTableSlot", "index": 5},
                         "type": {
                             "kind": "resource",
                             "baseShape": "structuredBuffer",
@@ -276,26 +258,8 @@
                     }
                 },
                 {
-                    "name": "out_base",
-                    "binding": {"kind": "descriptorTableSlot", "index": 3},
-                    "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "uint32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
-                        "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
-                        ]
-                    }
-                },
-                {
                     "name": "mu_ref",
-                    "binding": {"kind": "descriptorTableSlot", "index": 4},
+                    "binding": {"kind": "descriptorTableSlot", "index": 3},
                     "type": {
                         "kind": "resource",
                         "baseShape": "structuredBuffer",
@@ -313,7 +277,7 @@
                 },
                 {
                     "name": "srs_ref",
-                    "binding": {"kind": "descriptorTableSlot", "index": 5},
+                    "binding": {"kind": "descriptorTableSlot", "index": 4},
                     "type": {
                         "kind": "resource",
                         "baseShape": "structuredBuffer",
@@ -331,7 +295,7 @@
                 },
                 {
                     "name": "out",
-                    "binding": {"kind": "descriptorTableSlot", "index": 6},
+                    "binding": {"kind": "descriptorTableSlot", "index": 5},
                     "type": {
                         "kind": "resource",
                         "baseShape": "structuredBuffer",

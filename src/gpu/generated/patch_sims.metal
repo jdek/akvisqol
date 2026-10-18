@@ -67,20 +67,18 @@ struct KernelContext_0
     float device* entryPointParams_ref_spec_0;
     float device* entryPointParams_deg_spec_0;
     uint device* entryPointParams_rows_0;
-    uint device* entryPointParams_out_base_0;
     float device* entryPointParams_mu_ref_0;
     float device* entryPointParams_srs_ref_0;
     float device* entryPointParams_out_0;
 };
 
-[[kernel]] void patch_sims(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], float device* entryPointParams_ref_spec_1 [[buffer(1)]], float device* entryPointParams_deg_spec_1 [[buffer(2)]], uint device* entryPointParams_rows_1 [[buffer(3)]], uint device* entryPointParams_out_base_1 [[buffer(4)]], float device* entryPointParams_mu_ref_1 [[buffer(5)]], float device* entryPointParams_srs_ref_1 [[buffer(6)]], float device* entryPointParams_out_1 [[buffer(7)]])
+[[kernel]] void patch_sims(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], float device* entryPointParams_ref_spec_1 [[buffer(1)]], float device* entryPointParams_deg_spec_1 [[buffer(2)]], uint device* entryPointParams_rows_1 [[buffer(3)]], float device* entryPointParams_mu_ref_1 [[buffer(4)]], float device* entryPointParams_srs_ref_1 [[buffer(5)]], float device* entryPointParams_out_1 [[buffer(6)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
     (&kernelContext_0)->entryPointParams_ref_spec_0 = entryPointParams_ref_spec_1;
     (&kernelContext_0)->entryPointParams_deg_spec_0 = entryPointParams_deg_spec_1;
     (&kernelContext_0)->entryPointParams_rows_0 = entryPointParams_rows_1;
-    (&kernelContext_0)->entryPointParams_out_base_0 = entryPointParams_out_base_1;
     (&kernelContext_0)->entryPointParams_mu_ref_0 = entryPointParams_mu_ref_1;
     (&kernelContext_0)->entryPointParams_srs_ref_0 = entryPointParams_srs_ref_1;
     (&kernelContext_0)->entryPointParams_out_0 = entryPointParams_out_1;
@@ -112,20 +110,20 @@ struct KernelContext_0
         }
     }
     uint _S6 = lo_r_0 * 8U;
-    uint off_0 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 2U] + (t_0 - (&kernelContext_0)->entryPointParams_rows_0[_S6]);
-    uint _S7 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 3U];
-    uint _S8 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 4U];
-    uint _S9 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 5U];
-    uint _S10 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 6U];
-    uint _S11 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 7U];
-    int _S12 = int((&kernelContext_0)->entryPointParams_0->num_bands_0);
-    int _S13 = int((&kernelContext_0)->entryPointParams_0->patch_size_0);
+    uint _S7 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 2U] + (t_0 - (&kernelContext_0)->entryPointParams_rows_0[_S6]);
+    uint _S8 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 3U];
+    uint _S9 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 4U];
+    uint _S10 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 5U];
+    uint _S11 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 6U];
+    uint _S12 = (&kernelContext_0)->entryPointParams_rows_0[_S6 + 7U];
+    int _S13 = int((&kernelContext_0)->entryPointParams_0->num_bands_0);
+    int _S14 = int((&kernelContext_0)->entryPointParams_0->patch_size_0);
     uint cells_0 = (&kernelContext_0)->entryPointParams_0->num_bands_0 * (&kernelContext_0)->entryPointParams_0->patch_size_0;
     int r_0 = int(0);
     float total_0 = 0.0f;
     for(;;)
     {
-        if(r_0 < _S12)
+        if(r_0 < _S13)
         {
         }
         else
@@ -136,7 +134,7 @@ struct KernelContext_0
         float band_sum_0 = 0.0f;
         for(;;)
         {
-            if(c_0 < _S13)
+            if(c_0 < _S14)
             {
             }
             else
@@ -156,7 +154,7 @@ struct KernelContext_0
                 {
                     break;
                 }
-                int _S14 = clamp(r_0 + dr_1, int(0), _S12 - int(1));
+                int _S15 = clamp(r_0 + dr_1, int(0), _S13 - int(1));
                 int dc_1 = int(-1);
                 for(;;)
                 {
@@ -167,12 +165,12 @@ struct KernelContext_0
                     {
                         break;
                     }
-                    int cc_0 = clamp(c_0 + dc_1, int(0), _S13 - int(1));
+                    int cc_0 = clamp(c_0 + dc_1, int(0), _S14 - int(1));
                     float w_0 = wgt_0(dr_1, dc_1);
-                    float d_0 = degAt_0((&kernelContext_0)->entryPointParams_deg_spec_0, _S10, _S11, _S14, int(off_0) + cc_0);
+                    float d_0 = degAt_0((&kernelContext_0)->entryPointParams_deg_spec_0, _S11, _S12, _S15, int(_S7) + cc_0);
                     float md_1 = md_0 + w_0 * d_0;
                     float dsq_1 = dsq_0 + w_0 * (d_0 * d_0);
-                    float rd_1 = rd_0 + w_0 * ((&kernelContext_0)->entryPointParams_ref_spec_0[_S7 + uint(_S14) * _S8 + _S9 + uint(cc_0)] * d_0);
+                    float rd_1 = rd_0 + w_0 * ((&kernelContext_0)->entryPointParams_ref_spec_0[_S8 + uint(_S15) * _S9 + _S10 + uint(cc_0)] * d_0);
                     dc_1 = dc_1 + int(1);
                     md_0 = md_1;
                     dsq_0 = dsq_1;
@@ -204,7 +202,7 @@ struct KernelContext_0
         r_0 = r_0 + int(1);
         total_0 = total_1;
     }
-    *((&kernelContext_0)->entryPointParams_out_0+((&kernelContext_0)->entryPointParams_out_base_0[lo_r_0] + off_0)) = total_0 / float(cells_0);
+    *((&kernelContext_0)->entryPointParams_out_0+t_0) = total_0 / float(cells_0);
     return;
 }
 

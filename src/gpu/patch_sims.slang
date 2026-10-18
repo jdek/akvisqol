@@ -3,7 +3,7 @@
 
 // NSIM of ref patch `row` vs the degraded patch at frame `lo + k`, one thread
 // per (row, k). Mirrors `Comparator.measureSimilarityScalar`; degraded frames
-// past nf_deg read as zero.
+// past nf_deg read as zero. Results are compact, one per task: `out[t]`.
 //
 // rows: (num_rows, 8) u32 — task_base, count, lo, ref_base, nf_ref, ref_col,
 //       deg_base, nf_deg.
@@ -22,7 +22,6 @@ void patch_sims(
     uniform StructuredBuffer<float> ref_spec,
     uniform StructuredBuffer<float> deg_spec,
     uniform StructuredBuffer<uint> rows,
-    uniform StructuredBuffer<uint> out_base,
     uniform StructuredBuffer<float> mu_ref,
     uniform StructuredBuffer<float> srs_ref,
     uniform RWStructuredBuffer<float> out,
@@ -83,5 +82,5 @@ void patch_sims(
         }
         total += band_sum;
     }
-    out[out_base[row] + off] = total / float(cells);
+    out[t] = total / float(cells);
 }

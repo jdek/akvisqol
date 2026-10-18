@@ -40,7 +40,15 @@ struct KernelContext_0
     packed_float2 device* entryPointParams_tw_0;
 };
 
-[[kernel]] void fft_radix2(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_x_1 [[buffer(1)]], packed_float2 device* entryPointParams_y_1 [[buffer(2)]], packed_float2 device* entryPointParams_tw_1 [[buffer(3)]])
+void Radix2_dft_0(array<float2, int(2)> thread* u_0, float sign_2)
+{
+    float2 a_1 = (*u_0)[int(0)];
+    (*u_0)[int(0)] = (*u_0)[int(0)] + (*u_0)[int(1)];
+    (*u_0)[int(1)] = a_1 - (*u_0)[int(1)];
+    return;
+}
+
+[[kernel]] void fft_pass(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_x_1 [[buffer(1)]], packed_float2 device* entryPointParams_y_1 [[buffer(2)]], packed_float2 device* entryPointParams_tw_1 [[buffer(3)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
@@ -52,18 +60,42 @@ struct KernelContext_0
     {
         return;
     }
-    uint h_0 = (1U << ((&kernelContext_0)->entryPointParams_0->log2_n_1)) >> 1U;
+    uint q_0 = (1U << ((&kernelContext_0)->entryPointParams_0->log2_n_1)) >> 1U;
     uint base_0 = (g_0 >> ((&kernelContext_0)->entryPointParams_0->log2_n_1 - 1U)) << ((&kernelContext_0)->entryPointParams_0->log2_n_1);
-    uint i_0 = g_0 & (h_0 - 1U);
+    uint i_0 = g_0 & (q_0 - 1U);
     uint k_0 = i_0 & ((&kernelContext_0)->entryPointParams_0->p_0 - 1U);
-    uint _S6 = base_0 + i_0;
-    float2 _S7 = float2(*((&kernelContext_0)->entryPointParams_x_0+_S6)) ;
-    float2 _S8 = float2(*((&kernelContext_0)->entryPointParams_x_0+(_S6 + h_0))) ;
-    uint _S9 = h_0 / (&kernelContext_0)->entryPointParams_0->p_0;
-    float2 u1_0 = cmul_0(_S8, twiddle_0((&kernelContext_0)->entryPointParams_tw_0, k_0 * _S9, (&kernelContext_0)->entryPointParams_0->log2_n_1, (&kernelContext_0)->entryPointParams_0->sign_1));
-    uint j_0 = base_0 + ((i_0 - k_0) << 1U) + k_0;
-    *((&kernelContext_0)->entryPointParams_y_0+j_0) = packed_float2((_S7 + u1_0)) ;
-    *((&kernelContext_0)->entryPointParams_y_0+(j_0 + (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2((_S7 - u1_0)) ;
+    uint _S6 = q_0 / (&kernelContext_0)->entryPointParams_0->p_0;
+    thread array<float2, int(2)> u_1;
+    uint _S7 = base_0 + i_0;
+    u_1[int(0)] = float2(*((&kernelContext_0)->entryPointParams_x_0+_S7)) ;
+    uint m_0 = 1U;
+    for(;;)
+    {
+        if(m_0 < 2U)
+        {
+        }
+        else
+        {
+            break;
+        }
+        u_1[m_0] = cmul_0(float2(*((&kernelContext_0)->entryPointParams_x_0+(_S7 + m_0 * q_0))) , twiddle_0((&kernelContext_0)->entryPointParams_tw_0, m_0 * k_0 * _S6, (&kernelContext_0)->entryPointParams_0->log2_n_1, (&kernelContext_0)->entryPointParams_0->sign_1));
+        m_0 = m_0 + 1U;
+    }
+    Radix2_dft_0(&u_1, (&kernelContext_0)->entryPointParams_0->sign_1);
+    uint _S8 = base_0 + ((i_0 - k_0) << 1U) + k_0;
+    uint r_0 = 0U;
+    for(;;)
+    {
+        if(r_0 < 2U)
+        {
+        }
+        else
+        {
+            break;
+        }
+        *((&kernelContext_0)->entryPointParams_y_0+(_S8 + r_0 * (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2(u_1[r_0]) ;
+        r_0 = r_0 + 1U;
+    }
     return;
 }
 

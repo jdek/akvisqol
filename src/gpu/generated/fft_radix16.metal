@@ -25,30 +25,12 @@ float2 twiddle_0(packed_float2 device* tw_0, uint t_0, uint log2_n_0, float sign
     return float2(w_0.x, sign_0 * w_0.y);
 }
 
-float2 mul_si_0(float2 a_1, float sign_1)
-{
-    return float2(- sign_1 * a_1.y, sign_1 * a_1.x);
-}
-
-void dft4_0(float2 thread* a0_0, float2 thread* a1_0, float2 thread* a2_0, float2 thread* a3_0, float sign_2)
-{
-    float2 v0_0 = *a0_0 + *a2_0;
-    float2 v1_0 = *a0_0 - *a2_0;
-    float2 v2_0 = *a1_0 + *a3_0;
-    float2 v3_0 = mul_si_0(*a1_0 - *a3_0, sign_2);
-    *a0_0 = v0_0 + v2_0;
-    *a1_0 = v1_0 + v3_0;
-    *a2_0 = v0_0 - v2_0;
-    *a3_0 = v1_0 - v3_0;
-    return;
-}
-
 struct EntryPointParams_0
 {
     uint log2_n_1;
     uint p_0;
     uint total_0;
-    float sign_3;
+    float sign_1;
 };
 
 struct KernelContext_0
@@ -59,9 +41,83 @@ struct KernelContext_0
     packed_float2 device* entryPointParams_tw_0;
 };
 
-[[kernel]] void fft_radix16(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_x_1 [[buffer(1)]], packed_float2 device* entryPointParams_y_1 [[buffer(2)]], packed_float2 device* entryPointParams_tw_1 [[buffer(3)]])
+float2 mul_si_0(float2 a_1, float sign_2)
+{
+    return float2(- sign_2 * a_1.y, sign_2 * a_1.x);
+}
+
+void dft4_0(float2 thread* a0_0, float2 thread* a1_0, float2 thread* a2_0, float2 thread* a3_0, float sign_3)
+{
+    float2 v0_0 = *a0_0 + *a2_0;
+    float2 v1_0 = *a0_0 - *a2_0;
+    float2 v2_0 = *a1_0 + *a3_0;
+    float2 v3_0 = mul_si_0(*a1_0 - *a3_0, sign_3);
+    *a0_0 = v0_0 + v2_0;
+    *a1_0 = v1_0 + v3_0;
+    *a2_0 = v0_0 - v2_0;
+    *a3_0 = v1_0 - v3_0;
+    return;
+}
+
+void Radix16_dft_0(array<float2, int(16)> thread* u_0, float sign_4)
 {
     uint k1_0;
+    uint m2_0 = 0U;
+    for(;;)
+    {
+        if(m2_0 < 4U)
+        {
+        }
+        else
+        {
+            break;
+        }
+        dft4_0(&(*u_0)[m2_0], &(*u_0)[m2_0 + 4U], &(*u_0)[m2_0 + 8U], &(*u_0)[m2_0 + 12U], sign_4);
+        k1_0 = 1U;
+        for(;;)
+        {
+            if(k1_0 < 4U)
+            {
+            }
+            else
+            {
+                break;
+            }
+            uint _S6 = m2_0 * k1_0;
+            (*u_0)[m2_0 + 4U * k1_0] = cmul_0((*u_0)[m2_0 + 4U * k1_0], float2(W16_0[_S6].x, sign_4 * W16_0[_S6].y));
+            k1_0 = k1_0 + 1U;
+        }
+        m2_0 = m2_0 + 1U;
+    }
+    thread array<float2, int(16)> v_0;
+    k1_0 = 0U;
+    for(;;)
+    {
+        if(k1_0 < 4U)
+        {
+        }
+        else
+        {
+            break;
+        }
+        uint _S7 = 4U * k1_0;
+        thread float2 a0_1 = (*u_0)[_S7];
+        thread float2 a1_1 = (*u_0)[_S7 + 1U];
+        thread float2 a2_1 = (*u_0)[_S7 + 2U];
+        thread float2 a3_1 = (*u_0)[_S7 + 3U];
+        dft4_0(&a0_1, &a1_1, &a2_1, &a3_1, sign_4);
+        v_0[k1_0] = a0_1;
+        v_0[k1_0 + 4U] = a1_1;
+        v_0[k1_0 + 8U] = a2_1;
+        v_0[k1_0 + 12U] = a3_1;
+        k1_0 = k1_0 + 1U;
+    }
+    *u_0 = v_0;
+    return;
+}
+
+[[kernel]] void fft_pass(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_x_1 [[buffer(1)]], packed_float2 device* entryPointParams_y_1 [[buffer(2)]], packed_float2 device* entryPointParams_tw_1 [[buffer(3)]])
+{
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
     (&kernelContext_0)->entryPointParams_x_0 = entryPointParams_x_1;
@@ -76,10 +132,10 @@ struct KernelContext_0
     uint base_0 = (g_0 >> ((&kernelContext_0)->entryPointParams_0->log2_n_1 - 4U)) << ((&kernelContext_0)->entryPointParams_0->log2_n_1);
     uint i_0 = g_0 & (q_0 - 1U);
     uint k_0 = i_0 & ((&kernelContext_0)->entryPointParams_0->p_0 - 1U);
-    uint _S6 = q_0 / (&kernelContext_0)->entryPointParams_0->p_0;
-    thread array<float2, int(16)> u_0;
-    uint _S7 = base_0 + i_0;
-    u_0[int(0)] = float2(*((&kernelContext_0)->entryPointParams_x_0+_S7)) ;
+    uint _S8 = q_0 / (&kernelContext_0)->entryPointParams_0->p_0;
+    thread array<float2, int(16)> u_1;
+    uint _S9 = base_0 + i_0;
+    u_1[int(0)] = float2(*((&kernelContext_0)->entryPointParams_x_0+_S9)) ;
     uint m_0 = 1U;
     for(;;)
     {
@@ -90,58 +146,23 @@ struct KernelContext_0
         {
             break;
         }
-        u_0[m_0] = cmul_0(float2(*((&kernelContext_0)->entryPointParams_x_0+(_S7 + m_0 * q_0))) , twiddle_0((&kernelContext_0)->entryPointParams_tw_0, m_0 * k_0 * _S6, (&kernelContext_0)->entryPointParams_0->log2_n_1, (&kernelContext_0)->entryPointParams_0->sign_3));
+        u_1[m_0] = cmul_0(float2(*((&kernelContext_0)->entryPointParams_x_0+(_S9 + m_0 * q_0))) , twiddle_0((&kernelContext_0)->entryPointParams_tw_0, m_0 * k_0 * _S8, (&kernelContext_0)->entryPointParams_0->log2_n_1, (&kernelContext_0)->entryPointParams_0->sign_1));
         m_0 = m_0 + 1U;
     }
-    uint m2_0 = 0U;
+    Radix16_dft_0(&u_1, (&kernelContext_0)->entryPointParams_0->sign_1);
+    uint _S10 = base_0 + ((i_0 - k_0) << 4U) + k_0;
+    uint r_0 = 0U;
     for(;;)
     {
-        if(m2_0 < 4U)
+        if(r_0 < 16U)
         {
         }
         else
         {
             break;
         }
-        dft4_0(&u_0[m2_0], &u_0[m2_0 + 4U], &u_0[m2_0 + 8U], &u_0[m2_0 + 12U], (&kernelContext_0)->entryPointParams_0->sign_3);
-        k1_0 = 1U;
-        for(;;)
-        {
-            if(k1_0 < 4U)
-            {
-            }
-            else
-            {
-                break;
-            }
-            uint _S8 = m2_0 * k1_0;
-            u_0[m2_0 + 4U * k1_0] = cmul_0(u_0[m2_0 + 4U * k1_0], float2(W16_0[_S8].x, (&kernelContext_0)->entryPointParams_0->sign_3 * W16_0[_S8].y));
-            k1_0 = k1_0 + 1U;
-        }
-        m2_0 = m2_0 + 1U;
-    }
-    uint _S9 = base_0 + ((i_0 - k_0) << 4U) + k_0;
-    k1_0 = 0U;
-    for(;;)
-    {
-        if(k1_0 < 4U)
-        {
-        }
-        else
-        {
-            break;
-        }
-        uint _S10 = 4U * k1_0;
-        thread float2 a0_1 = u_0[_S10];
-        thread float2 a1_1 = u_0[_S10 + 1U];
-        thread float2 a2_1 = u_0[_S10 + 2U];
-        thread float2 a3_1 = u_0[_S10 + 3U];
-        dft4_0(&a0_1, &a1_1, &a2_1, &a3_1, (&kernelContext_0)->entryPointParams_0->sign_3);
-        *((&kernelContext_0)->entryPointParams_y_0+(_S9 + k1_0 * (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2(a0_1) ;
-        *((&kernelContext_0)->entryPointParams_y_0+(_S9 + (k1_0 + 4U) * (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2(a1_1) ;
-        *((&kernelContext_0)->entryPointParams_y_0+(_S9 + (k1_0 + 8U) * (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2(a2_1) ;
-        *((&kernelContext_0)->entryPointParams_y_0+(_S9 + (k1_0 + 12U) * (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2(a3_1) ;
-        k1_0 = k1_0 + 1U;
+        *((&kernelContext_0)->entryPointParams_y_0+(_S10 + r_0 * (&kernelContext_0)->entryPointParams_0->p_0)) = packed_float2(u_1[r_0]) ;
+        r_0 = r_0 + 1U;
     }
     return;
 }

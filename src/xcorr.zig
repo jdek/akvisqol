@@ -280,12 +280,7 @@ pub fn refineLag(s1: []const f64, s2: []const f64, approx: []const f32, stride: 
     if (biggest == 0) return 0;
     std.debug.assert(n >= 2 * biggest - 1);
     const max_lag = biggest - 1;
-
-    var e1: f64 = 0;
-    var e2: f64 = 0;
-    for (s1) |x| e1 += x * x;
-    for (s2) |x| e2 += x * x;
-    const slack: f32 = @floatCast(2.0 * tol * (e1 + e2) * scale);
+    const slack = refineSlack(s1, s2, scale, tol);
 
     var top: f32 = 0;
     for (n - max_lag..n) |i| top = @max(top, @abs(approx[i * stride]));
@@ -304,10 +299,22 @@ pub fn refineLag(s1: []const f64, s2: []const f64, approx: []const f32, stride: 
         cands[nc] = @intCast(i);
         nc += 1;
     };
+    return rescore(s1, s2, cands[0..nc]);
+}
 
+pub fn refineSlack(s1: []const f64, s2: []const f64, scale: f64, tol: f64) f32 {
+    var e1: f64 = 0;
+    var e2: f64 = 0;
+    for (s1) |x| e1 += x * x;
+    for (s2) |x| e2 += x * x;
+    return @floatCast(2.0 * tol * (e1 + e2) * scale);
+}
+
+/// First on ties, so `cands` must ascend (`bestLagCached`'s order).
+pub fn rescore(s1: []const f64, s2: []const f64, cands: []const i64) i64 {
     var best_abs: f64 = -std.math.inf(f64);
     var best_lag: i64 = 0;
-    for (cands[0..nc]) |lag| {
+    for (cands) |lag| {
         const a = @abs(dotAtLag(s1, s2, lag));
         if (a > best_abs) {
             best_abs = a;
