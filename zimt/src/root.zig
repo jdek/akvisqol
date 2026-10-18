@@ -70,6 +70,8 @@ pub const RawBlock = struct {
     /// the host pointer (staging); Vulkan: a block record.
     handle: usize,
     host: ?[*]u8,
+    /// What kernels address it by; 0 for staging.
+    addr: u64,
 };
 
 pub const Block = struct {
@@ -94,6 +96,10 @@ pub const Allocation = struct {
 
     pub fn host(self: Allocation) ?[*]u8 {
         return if (self.block.raw.host) |h| h + self.offset else null;
+    }
+
+    pub fn address(self: Allocation) u64 {
+        return self.block.raw.addr + self.offset;
     }
 
     pub fn span(self: Allocation, offset: usize, len: usize) Span {
@@ -131,23 +137,69 @@ fn Elem(comptime B: type) type {
 
 pub const Span = struct { block: *const Block, offset: usize, len: usize };
 
-pub const Access = enum { read, write, read_write };
+pub const Access = enum { read, read_write };
 
-/// One entry-point parameter, as reflected by Slang.
+/// One entry-point parameter, as reflected by Slang: a field of one
+/// `arg_size`-byte block, laid out as a C struct.
 pub const Param = struct {
     name: []const u8,
-    binding: union(enum) {
-        /// `access` orders Vulkan commands; `stride` must match the `Args`
-        /// field's element (`checkDef`).
-        buffer: struct { metal_index: u32, vk_binding: u32, access: Access },
-        uniform: struct { offset: u32, size: u32 },
+    offset: u32,
+    kind: union(enum) {
+        /// A device address (`RO<T>`, `RW<T>`). `access` orders Vulkan
+        /// commands; `stride` must match the `Args` field's element (`checkDef`).
+        buffer: struct { access: Access, stride: u32 },
+        value: struct { size: u32 },
     },
 };
 
+/// Checks a kernel's Zig types against its reflected layout; a mismatch
+/// would skew every element or field after it.
 fn checkDef(comptime K: type) void {
-    inline for (.{ "name", "symbol", "threads", "metal", "ptx", "spirv", "Args", "params", "uniform_size", "uniform_index" }) |decl| {
+    inline for (.{ "name", "symbol", "threads", "metal", "ptx", "spirv", "Args", "params", "arg_size" }) |decl| {
         if (!@hasDecl(K, decl)) @compileError(@typeName(K) ++ " is not a zimt kernel (missing `" ++ decl ++ "`)");
     }
+    const fail = struct {
+        fn f(comptime param: []const u8, comptime fmt: []const u8, args: anytype) noreturn {
+            @compileError(std.fmt.comptimePrint("kernel '{s}', `{s}`: " ++ fmt, .{ K.name, param } ++ args));
+        }
+    }.f;
+    if (@typeInfo(K.Args).@"struct".field_names.len != K.params.len)
+        @compileError("kernel '" ++ K.name ++ "': Args fields differ from its reflected parameters");
+    var end: u32 = 0;
+    for (K.params) |p| {
+        if (!@hasField(K.Args, p.name)) fail(p.name, "missing from Args", .{});
+        const F = @FieldType(K.Args, p.name);
+        const size: u32 = switch (p.kind) {
+            .buffer => |b| blk: {
+                const T = Elem(F);
+                if (@sizeOf(T) != b.stride) fail(p.name, "{s} is {d} bytes, but the kernel's elements are {d} apart", .{ @typeName(T), @sizeOf(T), b.stride });
+                break :blk 8;
+            },
+            .value => |v| blk: {
+                if (@sizeOf(F) != v.size) fail(p.name, "{s} is {d} bytes, the reflected parameter {d}", .{ @typeName(F), @sizeOf(F), v.size });
+                break :blk v.size;
+            },
+        };
+        if (p.offset % @min(size, 8) != 0) fail(p.name, "offset {d} is misaligned", .{p.offset});
+        if (p.offset < end) fail(p.name, "overlaps the previous parameter", .{});
+        if (p.offset + size > K.arg_size) fail(p.name, "ends past the {d}-byte argument block", .{K.arg_size});
+        end = p.offset + size;
+    }
+}
+
+/// The argument block every backend passes: addresses and values at their
+/// reflected offsets.
+pub fn packArgs(comptime K: type, args: K.Args) [K.arg_size]u8 {
+    comptime checkDef(K);
+    var bytes: [K.arg_size]u8 = @splat(0);
+    inline for (K.params) |p| {
+        const v = @field(args, p.name);
+        switch (p.kind) {
+            .buffer => std.mem.writeInt(u64, bytes[p.offset..][0..8], v.mem.address(), .little),
+            .value => |val| bytes[p.offset..][0..val.size].* = @bitCast(v),
+        }
+    }
+    return bytes;
 }
 
 pub fn Kernel(comptime K: type) type {
@@ -621,26 +673,6 @@ pub const Device = struct {
         return self.wait(try self.submit());
     }
 };
-
-pub fn packUniforms(comptime K: type, args: K.Args) [@max(1, K.uniform_size / 4)]u32 {
-    var words: [@max(1, K.uniform_size / 4)]u32 = @splat(0);
-    inline for (K.params) |p| switch (p.binding) {
-        .uniform => |u| {
-            comptime std.debug.assert(u.offset % 4 == 0 and u.size == 4);
-            words[u.offset / 4] = @bitCast(@field(args, p.name));
-        },
-        .buffer => {},
-    };
-    return words;
-}
-
-pub fn bufferCount(comptime K: type) usize {
-    var n: usize = 0;
-    for (K.params) |p| if (p.binding == .buffer) {
-        n += 1;
-    };
-    return n;
-}
 
 test {
     _ = Device;

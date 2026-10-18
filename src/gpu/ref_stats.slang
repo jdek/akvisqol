@@ -12,10 +12,10 @@ import zimt;
 [numthreads(64, 1, 1)]
 void ref_stats(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float> spec,
-    uniform StructuredBuffer<uint> rows,
-    uniform RWStructuredBuffer<float> mu,
-    uniform RWStructuredBuffer<float> srs,
+    uniform RO<float> spec,
+    uniform RO<uint> rows,
+    uniform RW<float> mu,
+    uniform RW<float> srs,
     uniform uint num_rows,
     uniform uint num_bands,
     uniform uint patch_size)

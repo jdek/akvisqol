@@ -1,0 +1,153 @@
+{
+    "version": "1.1",
+    "parameters": [
+
+    ],
+    "globalScope": {
+        "kind": "none",
+        "parameters": [
+
+        ]
+    },
+    "entryPoints": [
+        {
+            "name": "scale3",
+            "stage": "compute",
+            "scope": {
+                "kind": "constantBuffer",
+                "binding": {"kind": "pushConstantBuffer", "index": 0},
+                "parameters": [
+                    {
+                        "name": "tid",
+                        "semanticName": "SV_DISPATCHTHREADID",
+                        "type": {
+                            "kind": "vector",
+                            "elementCount": 3,
+                            "elementType": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "sizes": [
+
+                            ]
+                        }
+                    },
+                    {
+                        "name": "v",
+                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
+                        "type": {
+                            "kind": "struct",
+                            "name": "RW",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "vector",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "uniform", "value": 8, "alignment": 8}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "s",
+                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "n",
+                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    }
+                ]
+            },
+            "parameters": [
+                {
+                    "name": "tid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        },
+                        "sizes": [
+
+                        ]
+                    }
+                },
+                {
+                    "name": "v",
+                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
+                    "type": {
+                        "kind": "struct",
+                        "name": "RW",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "vector",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 8, "alignment": 8}
+                        ]
+                    }
+                },
+                {
+                    "name": "s",
+                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "float32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "n",
+                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                }
+            ],
+            "threadGroupSize": [32, 1, 1],
+            "bindings": [
+
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 0
+}

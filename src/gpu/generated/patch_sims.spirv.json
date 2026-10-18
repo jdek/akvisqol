@@ -34,116 +34,151 @@
                     },
                     {
                         "name": "ref_spec",
-                        "binding": {"kind": "descriptorTableSlot", "index": 0},
+                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "float32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "float",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "deg_spec",
-                        "binding": {"kind": "descriptorTableSlot", "index": 1},
+                        "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "float32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "float",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "rows",
-                        "binding": {"kind": "descriptorTableSlot", "index": 2},
+                        "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "uint32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "uint",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "mu_ref",
-                        "binding": {"kind": "descriptorTableSlot", "index": 3},
+                        "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "float32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "float",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "srs_ref",
-                        "binding": {"kind": "descriptorTableSlot", "index": 4},
+                        "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "float32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "float",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "out",
-                        "binding": {"kind": "descriptorTableSlot", "index": 5},
+                        "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "access": "readWrite",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "float32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RW",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "float",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "descriptorTableSlot", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "num_rows",
-                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -154,7 +189,7 @@
                     },
                     {
                         "name": "num_tasks",
-                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 52, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -165,7 +200,7 @@
                     },
                     {
                         "name": "num_bands",
-                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 56, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -176,7 +211,7 @@
                     },
                     {
                         "name": "patch_size",
-                        "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 60, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -205,116 +240,151 @@
                 },
                 {
                     "name": "ref_spec",
-                    "binding": {"kind": "descriptorTableSlot", "index": 0},
+                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "float32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "float",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "deg_spec",
-                    "binding": {"kind": "descriptorTableSlot", "index": 1},
+                    "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "float32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "float",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "rows",
-                    "binding": {"kind": "descriptorTableSlot", "index": 2},
+                    "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "uint32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "mu_ref",
-                    "binding": {"kind": "descriptorTableSlot", "index": 3},
+                    "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "float32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "float",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "srs_ref",
-                    "binding": {"kind": "descriptorTableSlot", "index": 4},
+                    "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "float32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "float",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "out",
-                    "binding": {"kind": "descriptorTableSlot", "index": 5},
+                    "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "access": "readWrite",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "float32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RW",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "float",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "descriptorTableSlot", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "num_rows",
-                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",
@@ -325,7 +395,7 @@
                 },
                 {
                     "name": "num_tasks",
-                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 52, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",
@@ -336,7 +406,7 @@
                 },
                 {
                     "name": "num_bands",
-                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 56, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",
@@ -347,7 +417,7 @@
                 },
                 {
                     "name": "patch_size",
-                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 60, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",
@@ -363,5 +433,5 @@
             ]
         }
     ],
-    "bindlessSpaceIndex": 1
+    "bindlessSpaceIndex": 0
 }

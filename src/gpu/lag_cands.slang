@@ -10,11 +10,11 @@ import zimt;
 [numthreads(64, 1, 1)]
 void lag_cands(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float2> corr,
-    uniform StructuredBuffer<uint> params,
-    uniform StructuredBuffer<uint> top,
-    uniform RWStructuredBuffer<uint> count,
-    uniform RWStructuredBuffer<int> cands,
+    uniform RO<float2> corr,
+    uniform RO<uint> params,
+    uniform RO<uint> top,
+    uniform RW<uint> count,
+    uniform RW<int> cands,
     uniform uint log2_n,
     uniform uint total_chunks,
     uniform uint cap)
@@ -31,7 +31,7 @@ void lag_cands(
         uint i = first + k;
         if (!lag_valid(i, n, max_lag) || !(lag_abs(corr, row, i, log2_n) >= floor)) continue;
         uint slot;
-        InterlockedAdd(count[row], 1u, slot);
+        InterlockedAdd(count.p[row], 1u, slot);
         if (slot < cap) cands[row * cap + slot] = i <= max_lag ? int(i) : int(i) - int(n);
     }
 }

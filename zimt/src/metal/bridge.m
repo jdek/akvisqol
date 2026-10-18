@@ -134,19 +134,19 @@ void zimt_metal_memory(ZimtMetal *m, uint64_t *used, uint64_t *limit) {
     *limit = dev.recommendedMaxWorkingSetSize;
 }
 
-void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents) {
+void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents, uint64_t *addr) {
     @autoreleasepool {
         id<MTLDevice> dev = (__bridge id<MTLDevice>)m->device;
         id<MTLBuffer> b = [dev newBufferWithLength:(bytes ? bytes : 4) options:MTLResourceStorageModeShared];
         if (!b) return NULL;
         if (contents) *contents = b.contents;
+        if (addr) *addr = b.gpuAddress;
         return (__bridge_retained void *)b;
     }
 }
 
-int zimt_metal_dispatch(ZimtMetal *m, void *pipeline,
-                        void *const *buffers, const size_t *offsets, const uint32_t *indices, uint32_t nbuffers,
-                        const void *bytes, uint32_t nbytes, uint32_t bytes_index,
+int zimt_metal_dispatch(ZimtMetal *m, void *pipeline, const void *bytes, uint32_t nbytes,
+                        void *const *buffers, const uint8_t *writes, uint32_t nbuffers,
                         const uint32_t groups[3], const uint32_t threads[3]) {
     @autoreleasepool {
         if (!m->cmdbuf) {
@@ -164,9 +164,10 @@ int zimt_metal_dispatch(ZimtMetal *m, void *pipeline,
         }
         id<MTLComputeCommandEncoder> enc = (__bridge id<MTLComputeCommandEncoder>)m->encoder;
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)pipeline];
-        if (nbytes > 0) [enc setBytes:bytes length:nbytes atIndex:bytes_index];
+        if (nbytes > 0) [enc setBytes:bytes length:nbytes atIndex:0];
         for (uint32_t i = 0; i < nbuffers; i++) {
-            [enc setBuffer:(__bridge id<MTLBuffer>)buffers[i] offset:offsets[i] atIndex:indices[i]];
+            [enc useResource:(__bridge id<MTLBuffer>)buffers[i]
+                       usage:(writes[i] ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead)];
         }
         [enc dispatchThreadgroups:MTLSizeMake(groups[0], groups[1], groups[2])
             threadsPerThreadgroup:MTLSizeMake(threads[0], threads[1], threads[2])];

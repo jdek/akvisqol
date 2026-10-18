@@ -19,12 +19,12 @@ import zimt;
 [numthreads(64, 1, 1)]
 void gammatone_frames(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float> signals,
-    uniform StructuredBuffer<uint> frames,
-    uniform StructuredBuffer<float> coeffs,
-    uniform StructuredBuffer<float> coeffs2,
-    uniform StructuredBuffer<float> hann,
-    uniform RWStructuredBuffer<float> out,
+    uniform RO<float> signals,
+    uniform RO<uint> frames,
+    uniform RO<float> coeffs,
+    uniform RO<float> coeffs2,
+    uniform RO<float> hann,
+    uniform RW<float> out,
     uniform uint num_frames,
     uniform uint num_bands,
     uniform uint window_size)

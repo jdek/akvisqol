@@ -9,8 +9,8 @@ import zimt;
 [numthreads(64, 1, 1)]
 void xcorr_spectrum(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float2> z,
-    uniform RWStructuredBuffer<float2> out,
+    uniform RO<float2> z,
+    uniform RW<float2> out,
     uniform uint log2_n,
     uniform uint total)
 {

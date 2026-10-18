@@ -4,6 +4,24 @@
 
 module zimt;
 
+// Kernel buffer parameters: device addresses, read-only or read-write
+// (bindgen records which, for Vulkan barriers and Metal resource usage). Atomics take `.p[i]`.
+public struct RO<T>
+{
+    public T* p;
+    public __subscript(uint i) -> T { get { return p[i]; } }
+}
+
+public struct RW<T>
+{
+    public T* p;
+    public __subscript(uint i) -> T
+    {
+        get { return p[i]; }
+        set { p[i] = newValue; }
+    }
+}
+
 // Rows of a folded 1-D dispatch: Vulkan only guarantees 65535 groups per
 // dimension, and Slang has no portable group count.
 // Must match `zimt.row_groups`.

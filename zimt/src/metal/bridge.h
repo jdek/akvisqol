@@ -23,13 +23,14 @@ void *zimt_metal_pipeline_new(ZimtMetal *m, void *lib, const char *entry, uint32
    performance (recommendedMaxWorkingSetSize). */
 void zimt_metal_memory(ZimtMetal *m, uint64_t *used, uint64_t *limit);
 
-/* Shared-storage buffer; `*contents` receives the CPU mapping. */
-void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents);
+/* Shared-storage buffer; `*contents` receives the CPU mapping, `*addr`
+   its GPU address. */
+void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents, uint64_t *addr);
 
-/* buffers[i] binds at indices[i] from offsets[i]; `bytes` (if nbytes > 0) at bytes_index. */
-int zimt_metal_dispatch(ZimtMetal *m, void *pipeline,
-                        void *const *buffers, const size_t *offsets, const uint32_t *indices, uint32_t nbuffers,
-                        const void *bytes, uint32_t nbytes, uint32_t bytes_index,
+/* `bytes` binds at index 0; the kernel reaches buffers[i] through it, so
+   they are made resident (writes[i]: read-write). */
+int zimt_metal_dispatch(ZimtMetal *m, void *pipeline, const void *bytes, uint32_t nbytes,
+                        void *const *buffers, const uint8_t *writes, uint32_t nbuffers,
                         const uint32_t groups[3], const uint32_t threads[3]);
 
 /* Non-blocking; returns the retained command buffer, or NULL if empty. */

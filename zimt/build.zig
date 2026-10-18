@@ -84,7 +84,7 @@ pub fn build(b: *std.Build) void {
     const test_kernels = kernelsModule(b, bindgen, mod, b.path("src/slang"), .{
         .sources = b.path("test"),
         .generated = b.path("test/generated"),
-        .entries = &.{.{ .name = "saxpy" }},
+        .entries = &test_entries,
         .metal = metal,
         .cuda = cuda,
         .vulkan = vulkan,
@@ -99,9 +99,14 @@ pub fn build(b: *std.Build) void {
     b.step("shaders", "Regenerate test/generated/ from test/*.slang (needs slangc)").dependOn(addRegenerate(b, .{
         .sources = b.path("test"),
         .generated_dir = "test/generated",
-        .entries = &.{.{ .name = "saxpy" }},
+        .entries = &test_entries,
     }));
 }
+
+const test_entries = [_]Entry{
+    .{ .name = "saxpy" },
+    .{ .name = "scale3" },
+};
 
 /// Null until the lazy dependency is fetched.
 fn translateHeaders(b: *std.Build, target: std.Build.ResolvedTarget, dep_name: []const u8, source: []const u8) ?*std.Build.Module {
@@ -145,12 +150,11 @@ pub const Entry = struct {
 pub const Kernels = struct {
     /// `b.dependency("zimt", ...)`; unused inside zimt's own build.
     zimt: *std.Build.Dependency = undefined,
-    /// Directory of `<entry>.slang` files; also the include path, with zimt's
+    /// Directory of `<source>.slang` files; also the include path, with zimt's
     /// own `src/slang`.
     sources: std.Build.LazyPath,
     /// From `addRegenerate`.
     generated: std.Build.LazyPath,
-    /// One per `<entry>.slang`; compiled separately so Metal buffer indices stay independent.
     entries: []const Entry,
     metal: bool,
     cuda: bool = false,
@@ -178,6 +182,7 @@ fn kernelsModule(b: *std.Build, bindgen: *std.Build.Step.Compile, zimt: *std.Bui
         gen.addArg(e);
         gen.addFileArg(k.generated.path(b, b.fmt("{s}.json", .{e})));
         gen.addFileArg(k.generated.path(b, b.fmt("{s}.spirv.json", .{e})));
+        gen.addFileArg(k.generated.path(b, b.fmt("{s}.spv", .{e})));
         if (k.vulkan) _ = wf.addCopyFile(k.generated.path(b, b.fmt("{s}.spv", .{e})), b.fmt("{s}.spv", .{e}));
         if (k.metal) {
             const run = b.addSystemCommand(&(xcrun_metal ++ .{

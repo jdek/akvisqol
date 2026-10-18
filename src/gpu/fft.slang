@@ -86,9 +86,9 @@ public struct Radix16 : IRadix
 [numthreads(64, 1, 1)]
 void fft_pass<T : IRadix>(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float2> x,
-    uniform RWStructuredBuffer<float2> y,
-    uniform StructuredBuffer<float2> tw,
+    uniform RO<float2> x,
+    uniform RW<float2> y,
+    uniform RO<float2> tw,
     uniform uint log2_n,
     uniform uint p,
     uniform uint total,

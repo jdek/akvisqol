@@ -56,16 +56,21 @@ test "bindings carry the reflected layout" {
     const K = kernels.saxpy;
     try std.testing.expectEqual([3]u32{ 32, 1, 1 }, K.threads);
     try std.testing.expectEqual(@as(usize, 4), K.params.len);
-    try std.testing.expectEqual(zimt.Access.read, K.params[0].binding.buffer.access);
-    try std.testing.expectEqual(zimt.Access.read_write, K.params[1].binding.buffer.access);
-    // Metal's uniform block takes buffer index 0; SPIR-V bindings start at 0.
-    try std.testing.expectEqual(@as(u32, 1), K.params[0].binding.buffer.metal_index);
-    try std.testing.expectEqual(@as(u32, 0), K.params[0].binding.buffer.vk_binding);
-    try std.testing.expectEqual(@as(u32, 1), K.params[1].binding.buffer.vk_binding);
-    try std.testing.expectEqual(@as(u32, 8), K.uniform_size);
-    const words = zimt.packUniforms(K, .{ .x = undefined, .y = undefined, .a = 1.5, .n = 7 });
-    try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 1.5))), words[0]);
-    try std.testing.expectEqual(@as(u32, 7), words[1]);
+    try std.testing.expectEqual(zimt.Access.read, K.params[0].kind.buffer.access);
+    try std.testing.expectEqual(zimt.Access.read_write, K.params[1].kind.buffer.access);
+    // Two addresses, then the scalars.
+    try std.testing.expectEqual(@as(u32, 8), K.params[1].offset);
+    try std.testing.expectEqual(@as(u32, 16), K.params[2].offset);
+    try std.testing.expectEqual(@as(u32, 20), K.params[3].offset);
+    try std.testing.expectEqual(@as(usize, 24), K.arg_size);
+    var blk: zimt.Block = .{ .raw = .{ .handle = 0, .host = null, .addr = 0x1000 }, .size = 1 << 20, .kind = .device, .buddy = null };
+    const x: zimt.Buffer(f32) = .{ .mem = .{ .block = &blk, .offset = 256, .size = 4 }, .len = 1 };
+    const y: zimt.Buffer(f32) = .{ .mem = .{ .block = &blk, .offset = 512, .size = 4 }, .len = 1 };
+    const bytes = zimt.packArgs(K, .{ .x = x, .y = y, .a = 1.5, .n = 7 });
+    try std.testing.expectEqual(@as(u64, 0x1100), std.mem.readInt(u64, bytes[0..8], .little));
+    try std.testing.expectEqual(@as(u64, 0x1200), std.mem.readInt(u64, bytes[8..16], .little));
+    try std.testing.expectEqual(@as(u32, @bitCast(@as(f32, 1.5))), std.mem.readInt(u32, bytes[16..20], .little));
+    try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, bytes[20..24], .little));
 }
 
 /// Every compiled-in backend with a device; skips if there are none.
@@ -355,6 +360,24 @@ test "arenas free everything together" {
             defer dev.free(again);
             try std.testing.expectEqual(first.mem.block, again.mem.block);
             try std.testing.expectEqual(first.mem.offset, again.mem.offset);
+        }
+    }.f);
+}
+
+test "float3 buffers share one layout on every backend" {
+    try eachDevice(struct {
+        fn f(dev: *zimt.Device) !void {
+            const k = try dev.kernel(kernels.scale3);
+            defer dev.release(k);
+            const n = 1000;
+            var v: [n][3]f32 = undefined;
+            for (&v, 0..) |*e, i| e.* = .{ @floatFromInt(i), @floatFromInt(i + 1), @floatFromInt(i + 2) };
+            const dv = try dev.allocInit([3]f32, &v);
+            defer dev.free(dv);
+            try dev.dispatch1d(k, n, .{ .v = dv, .s = 2.0, .n = n });
+            var out: [n][3]f32 = undefined;
+            try dev.download(dv, 0, &out);
+            for (out, v) |o, e| try std.testing.expectEqual([3]f32{ e[0] * 2, e[1] * 4, e[2] * 6 }, o);
         }
     }.f);
 }

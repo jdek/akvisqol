@@ -87,16 +87,16 @@ pub fn blockAlloc(d: *zimt.Device, bytes: usize, kind: zimt.BlockKind) !zimt.Raw
     if (kind == .device) {
         var p: c.CUdeviceptr = 0;
         try allocCall(api.cuMemAlloc(&p, bytes));
-        return .{ .handle = p, .host = null };
+        return .{ .handle = p, .host = null, .addr = p };
     }
     var host: ?*anyopaque = null;
     try allocCall(api.cuMemHostAlloc(&host, bytes, if (kind == .readback) c.CU_MEMHOSTALLOC_DEVICEMAP else 0));
     const h: [*]u8 = @ptrCast(host.?);
-    if (kind == .staging) return .{ .handle = @intFromPtr(h), .host = h };
+    if (kind == .staging) return .{ .handle = @intFromPtr(h), .host = h, .addr = 0 };
     errdefer _ = api.cuMemFreeHost(host);
     var dp: c.CUdeviceptr = 0;
     try call(api.cuMemHostGetDevicePointer(&dp, host, 0));
-    return .{ .handle = dp, .host = h };
+    return .{ .handle = dp, .host = h, .addr = dp };
 }
 
 pub fn blockFree(d: *zimt.Device, blk: *const zimt.Block) void {
@@ -131,28 +131,12 @@ pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     try call(api.cuMemsetD8Async(dst.block.raw.handle + dst.offset, 0, dst.len, state(d).stream));
 }
 
-/// Slang's CUDA `StructuredBuffer<T>` parameter: `{ T* data; size_t count; }`.
-const SlangBuffer = extern struct { data: u64, count: usize };
-
-/// Kernel params in declaration order: buffers as `SlangBuffer`, uniforms by value.
+/// Each parameter points into the packed block.
 pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32, args: K.Args) !void {
     try bind(d);
-    var storage: [K.params.len]SlangBuffer = undefined;
-    var ptrs: [K.params.len]?*anyopaque = undefined;
-    inline for (K.params, 0..) |p, i| {
-        const v = @field(args, p.name);
-        switch (p.binding) {
-            .buffer => {
-                // `count` only feeds Slang's optional bounds checks.
-                storage[i] = .{ .data = v.mem.block.raw.handle + v.mem.offset, .count = v.len };
-                ptrs[i] = @ptrCast(&storage[i]);
-            },
-            .uniform => {
-                storage[i].data = @as(u32, @bitCast(v));
-                ptrs[i] = @ptrCast(&storage[i].data);
-            },
-        }
-    }
+    var bytes align(8) = zimt.packArgs(K, args);
+    var ptrs: [@max(K.params.len, 1)]?*anyopaque = undefined;
+    inline for (K.params, 0..) |p, i| ptrs[i] = @ptrCast(&bytes[p.offset]);
     const t = K.threads;
     try call(api.cuLaunchKernel(@ptrFromInt(handle), groups[0], groups[1], groups[2], t[0], t[1], t[2], 0, state(d).stream, &ptrs, null));
 }

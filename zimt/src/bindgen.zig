@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Generates Zig kernel bindings from the Metal and SPIR-V reflections of
-//! `slangc -reflection-json`; they must agree.
+//! `slangc -reflection-json`, which must agree, and the SPIR-V itself:
+//! reflection names a pointer's element type but not its shape.
 const std = @import("std");
 const Value = std.json.Value;
 
@@ -10,8 +11,8 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len < 5 or (args.len - 5) % 3 != 0) {
-        std.log.err("usage: zimt-bindgen <out.zig> <metal:0|1> <ptx:0|1> <spirv:0|1> (<entry> <metal.json> <spirv.json>)...", .{});
+    if (args.len < 5 or (args.len - 5) % 4 != 0) {
+        std.log.err("usage: zimt-bindgen <out.zig> <metal:0|1> <ptx:0|1> <spirv:0|1> (<entry> <metal.json> <spirv.json> <spv>)...", .{});
         std.process.exit(2);
     }
     const embed: Embed = .{
@@ -28,14 +29,17 @@ pub fn main(init: std.process.Init) !void {
         \\
     );
     var i: usize = 5;
-    while (i < args.len) : (i += 3) {
+    while (i < args.len) : (i += 4) {
         const entry = args[i];
         var docs: [2]Value = undefined;
         for (&docs, args[i + 1 ..][0..2]) |*doc, path| {
             const text = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 * 1024 * 1024));
             doc.* = try std.json.parseFromSliceLeaky(Value, arena, text, .{});
         }
-        emit(w, docs[0], docs[1], entry, embed) catch |e| {
+        const spv = try std.Io.Dir.cwd().readFileAlloc(io, args[i + 3], arena, .limited(16 * 1024 * 1024));
+        const words = try arena.alloc(u32, spv.len / 4);
+        @memcpy(std.mem.sliceAsBytes(words), spv[0 .. words.len * 4]);
+        emit(arena, w, docs[0], docs[1], words, entry, embed) catch |e| {
             std.log.err("{s} ({s}, {s}): {t}", .{ entry, args[i + 1], args[i + 2], e });
             std.process.exit(1);
         };
@@ -45,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
 
 const Embed = struct { metal: bool, ptx: bool, spirv: bool };
 
-const Unsupported = error{ MissingEntryPoint, UnsupportedParameter, BadReflection, ReflectionMismatch };
+const Unsupported = error{ MissingEntryPoint, UnsupportedParameter, BadReflection, BadSpirv, ReflectionMismatch };
 
 fn get(v: Value, key: []const u8) Unsupported!Value {
     if (v != .object) return error.BadReflection;
@@ -75,22 +79,6 @@ fn scalar(name: []const u8) Unsupported!struct { zig: []const u8, slang: []const
     return error.UnsupportedParameter;
 }
 
-fn element(t: Value, buf: []u8) (Unsupported || error{NoSpaceLeft})!struct { slang: []const u8, zig: []const u8, size: u32 } {
-    const kind = try str(try get(t, "kind"));
-    if (std.mem.eql(u8, kind, "scalar")) {
-        const s = try scalar(try str(try get(t, "scalarType")));
-        return .{ .slang = s.slang, .zig = s.zig, .size = s.size };
-    }
-    if (std.mem.eql(u8, kind, "vector")) {
-        const n = try int(try get(t, "elementCount"));
-        const s = try scalar(try str(try get(try get(t, "elementType"), "scalarType")));
-        const slang = try std.fmt.bufPrint(buf, "{s}{d}", .{ s.slang, n });
-        const zig = try std.fmt.bufPrint(buf[slang.len..], "[{d}]{s}", .{ n, s.zig });
-        return .{ .slang = slang, .zig = zig, .size = s.size * n };
-    }
-    return error.UnsupportedParameter;
-}
-
 fn entryPoint(doc: Value, entry: []const u8) Unsupported!Value {
     const eps = try get(doc, "entryPoints");
     if (eps != .array) return error.BadReflection;
@@ -116,37 +104,182 @@ fn userParams(ep: Value, out: []Value) Unsupported![]Value {
     return out[0..n];
 }
 
-fn isResource(p: Value) Unsupported!bool {
-    return std.mem.eql(u8, try str(try get(try get(p, "type"), "kind")), "resource");
+const Access = enum { read, read_write };
+
+/// `RO<T>` or `RW<T>` from zimt.slang.
+fn bufferAccess(p: Value) Unsupported!?Access {
+    const t = try get(p, "type");
+    const kind = try str(try get(t, "kind"));
+    if (std.mem.eql(u8, kind, "pointer") or std.mem.eql(u8, kind, "resource")) {
+        std.log.err("`{s}`: buffer parameters are zimt's RO<T> or RW<T>", .{try str(try get(p, "name"))});
+        return error.UnsupportedParameter;
+    }
+    if (!std.mem.eql(u8, kind, "struct")) return null;
+    const name = try str(try get(t, "name"));
+    const access: Access = if (std.mem.eql(u8, name, "RO")) .read else if (std.mem.eql(u8, name, "RW")) .read_write else return error.UnsupportedParameter;
+    const fields = try get(t, "fields");
+    if (fields != .array or fields.array.items.len != 1 or
+        !std.mem.eql(u8, try str(try get(try get(fields.array.items[0], "type"), "kind")), "pointer")) return error.UnsupportedParameter;
+    return access;
 }
 
+fn mismatch(comptime fmt: []const u8, args: anytype) Unsupported {
+    std.log.err("Metal and SPIR-V reflections disagree: " ++ fmt, args);
+    return error.ReflectionMismatch;
+}
+
+/// Parameters are one block of 64-bit addresses and scalars, at the same
+/// offsets on every target.
 fn checkSpirv(metal_ep: Value, spirv_ep: Value, metal_params: []const Value, spirv_params: []const Value) Unsupported!void {
-    if (metal_params.len != spirv_params.len) return error.ReflectionMismatch;
+    if (metal_params.len != spirv_params.len) return mismatch("{d} vs {d} parameters", .{ metal_params.len, spirv_params.len });
     const tm = try get(metal_ep, "threadGroupSize");
     const ts = try get(spirv_ep, "threadGroupSize");
     if (tm != .array or ts != .array or tm.array.items.len != 3 or ts.array.items.len != 3) return error.BadReflection;
-    for (tm.array.items, ts.array.items) |a, b| if (try int(a) != try int(b)) return error.ReflectionMismatch;
-    var uniforms = false;
+    for (tm.array.items, ts.array.items) |a, b| if (try int(a) != try int(b)) return mismatch("thread-group size", .{});
     for (metal_params, spirv_params) |m, v| {
-        if (!std.mem.eql(u8, try str(try get(m, "name")), try str(try get(v, "name")))) return error.ReflectionMismatch;
-        if (try isResource(m) != try isResource(v)) return error.ReflectionMismatch;
+        const name = try str(try get(m, "name"));
+        if (!std.mem.eql(u8, name, try str(try get(v, "name")))) return mismatch("parameter `{s}` vs `{s}`", .{ name, try str(try get(v, "name")) });
+        if (try bufferAccess(m) != try bufferAccess(v)) return mismatch("`{s}` type", .{name});
         const mb = try get(m, "binding");
         const vb = try get(v, "binding");
-        if (try isResource(m)) {
-            if (!std.mem.eql(u8, try str(try get(vb, "kind")), "descriptorTableSlot")) return error.ReflectionMismatch;
-        } else {
-            uniforms = true;
-            if (try int(try get(mb, "offset")) != try int(try get(vb, "offset")) or
-                try int(try get(mb, "size")) != try int(try get(vb, "size"))) return error.ReflectionMismatch;
-        }
+        if (try int(try get(mb, "offset")) != try int(try get(vb, "offset")) or
+            try int(try get(mb, "size")) != try int(try get(vb, "size"))) return mismatch("`{s}` layout", .{name});
     }
-    if (uniforms) {
-        const kind = try str(try get(try get(try get(spirv_ep, "scope"), "binding"), "kind"));
-        if (!std.mem.eql(u8, kind, "pushConstantBuffer")) return error.ReflectionMismatch;
-    }
+    if (metal_params.len == 0) return;
+    const mk = try get(try get(metal_ep, "scope"), "binding");
+    if (try int(try get(mk, "index")) != 0) return error.UnsupportedParameter;
+    const vk = try str(try get(try get(try get(spirv_ep, "scope"), "binding"), "kind"));
+    if (!std.mem.eql(u8, vk, "pushConstantBuffer")) return mismatch("parameters are not a push-constant block in SPIR-V", .{});
 }
 
-fn emit(w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, entry: []const u8, embed: Embed) !void {
+/// The element type and stride of the buffer address at `offset` in the
+/// push-constant block.
+const Spirv = struct {
+    words: []const u32,
+
+    const op_type_int = 21;
+    const op_type_float = 22;
+    const op_type_vector = 23;
+    const op_type_struct = 30;
+    const op_type_pointer = 32;
+    const op_variable = 59;
+    const op_decorate = 71;
+    const op_member_decorate = 72;
+    const decoration_array_stride = 6;
+    const decoration_offset = 35;
+    const storage_push_constant = 9;
+    const storage_physical = 5349;
+
+    /// The instruction defining `id` (result id in word 1, or word 2 for
+    /// OpVariable).
+    fn def(s: Spirv, id: u32) ?[]const u32 {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            const op = ins[0] & 0xffff;
+            if (op >= op_type_int and op <= op_type_pointer and ins.len > 1 and ins[1] == id) return ins;
+        }
+        return null;
+    }
+
+    fn iter(s: Spirv) Iter {
+        return .{ .words = s.words, .i = 5 };
+    }
+
+    const Iter = struct {
+        words: []const u32,
+        i: usize,
+
+        fn next(it: *Iter) ?[]const u32 {
+            if (it.i >= it.words.len) return null;
+            const len = it.words[it.i] >> 16;
+            if (len == 0 or it.i + len > it.words.len) return null;
+            defer it.i += len;
+            return it.words[it.i..][0..len];
+        }
+    };
+
+    fn decoration(s: Spirv, id: u32, which: u32) ?u32 {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            if (ins[0] & 0xffff == op_decorate and ins.len > 3 and ins[1] == id and ins[2] == which) return ins[3];
+        }
+        return null;
+    }
+
+    fn memberOffset(s: Spirv, id: u32, member: u32) ?u32 {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            if (ins[0] & 0xffff == op_member_decorate and ins.len > 4 and ins[1] == id and ins[2] == member and ins[3] == decoration_offset) return ins[4];
+        }
+        return null;
+    }
+
+    fn pushBlock(s: Spirv) Unsupported!u32 {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            if (ins[0] & 0xffff != op_variable or ins.len < 4 or ins[3] != storage_push_constant) continue;
+            const ptr = s.def(ins[1]) orelse return error.BadSpirv;
+            return ptr[3];
+        }
+        return error.BadSpirv;
+    }
+
+    const Elem = struct { zig: []const u8, slang: []const u8, size: u32, stride: u32 };
+
+    fn element(s: Spirv, buf: []u8, offset: u32) (Unsupported || error{NoSpaceLeft})!Elem {
+        var ty = try s.pushBlock();
+        var at = offset;
+        // Down through the parameter block and RO/RW to the address.
+        while (true) {
+            const ins = s.def(ty) orelse return error.BadSpirv;
+            switch (ins[0] & 0xffff) {
+                op_type_struct => {
+                    for (ins[2..], 0..) |m, i| {
+                        const o = s.memberOffset(ty, @intCast(i)) orelse return error.BadSpirv;
+                        if (o == at) {
+                            ty = m;
+                            at = 0;
+                            break;
+                        }
+                    } else return error.BadSpirv;
+                },
+                op_type_pointer => {
+                    if (ins[2] != storage_physical) return error.BadSpirv;
+                    const stride = s.decoration(ty, decoration_array_stride) orelse return error.BadSpirv;
+                    const e = try s.value(buf, ins[3]);
+                    if (e.size != stride) return error.UnsupportedParameter;
+                    return .{ .zig = e.zig, .slang = e.slang, .size = e.size, .stride = stride };
+                },
+                else => return error.BadSpirv,
+            }
+        }
+    }
+
+    fn value(s: Spirv, buf: []u8, id: u32) (Unsupported || error{NoSpaceLeft})!Elem {
+        const ins = s.def(id) orelse return error.BadSpirv;
+        switch (ins[0] & 0xffff) {
+            op_type_int => {
+                if (ins[2] != 32) return error.UnsupportedParameter;
+                return if (ins[3] == 1) .{ .zig = "i32", .slang = "int", .size = 4, .stride = 4 } else .{ .zig = "u32", .slang = "uint", .size = 4, .stride = 4 };
+            },
+            op_type_float => {
+                if (ins[2] != 32) return error.UnsupportedParameter;
+                return .{ .zig = "f32", .slang = "float", .size = 4, .stride = 4 };
+            },
+            op_type_vector => {
+                const c = try s.value(buf, ins[2]);
+                const n = ins[3];
+                const slang = try std.fmt.bufPrint(buf, "{s}{d}", .{ c.slang, n });
+                const zig = try std.fmt.bufPrint(buf[slang.len..], "[{d}]{s}", .{ n, c.zig });
+                return .{ .zig = zig, .slang = slang, .size = c.size * n, .stride = c.size * n };
+            },
+            else => return error.UnsupportedParameter,
+        }
+    }
+};
+
+fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, spv: []const u32, entry: []const u8, embed: Embed) !void {
+    if (spv.len < 5 or spv[0] != 0x07230203) return error.BadSpirv;
     const ep = try entryPoint(metal_doc, entry);
     const vk_ep = try entryPoint(spirv_doc, entry);
     var metal_buf: [64]Value = undefined;
@@ -154,17 +287,11 @@ fn emit(w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, entry: []const u8
     const params = try userParams(ep, &metal_buf);
     const vk_params = try userParams(vk_ep, &spirv_buf);
     try checkSpirv(ep, vk_ep, params, vk_params);
+    const s: Spirv = .{ .words = spv };
 
     const tg = try get(ep, "threadGroupSize");
     if (tg != .array or tg.array.items.len != 3) return error.BadReflection;
     const threads = [3]u32{ try int(tg.array.items[0]), try int(tg.array.items[1]), try int(tg.array.items[2]) };
-
-    // Metal buffer index of the uniform block, if any.
-    var uniform_index: u32 = 0;
-    const scope = try get(ep, "scope");
-    if (optStr(scope, "kind")) |k| if (std.mem.eql(u8, k, "constantBuffer")) {
-        uniform_index = try int(try get(try get(scope, "binding"), "index"));
-    };
 
     try w.print("\npub const {s} = struct {{\n", .{entry});
     try w.print("    pub const name = \"{s}\";\n", .{entry});
@@ -175,47 +302,38 @@ fn emit(w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, entry: []const u8
             try w.print("    pub const " ++ c[0] ++ ": []const u8 = @embedFile(\"{s}." ++ c[1] ++ "\");\n", .{entry});
         } else try w.writeAll("    pub const " ++ c[0] ++ ": []const u8 = \"\";\n");
     }
-    try w.print("    pub const uniform_index = {d};\n", .{uniform_index});
 
-    var uniform_size: u32 = 0;
+    var size: u32 = 0;
+    var max_align: u32 = 4;
+    var decls: std.Io.Writer.Allocating = .init(arena);
     try w.writeAll("    pub const Args = struct {\n");
     for (params) |p| {
         const pname = try str(try get(p, "name"));
-        const t = try get(p, "type");
-        const kind = try str(try get(t, "kind"));
-        if (std.mem.eql(u8, kind, "resource")) {
-            if (!std.mem.eql(u8, try str(try get(t, "baseShape")), "structuredBuffer")) return error.UnsupportedParameter;
-            var buf: [32]u8 = undefined;
-            const el = try element(try get(t, "resultType"), &buf);
-            const rw = optStr(t, "access") != null;
-            try w.print("        /// {s}StructuredBuffer<{s}>\n", .{ if (rw) "RW" else "", el.slang });
-            try w.print("        {f}: zimt.Buffer({s}),\n", .{ std.zig.fmtId(pname), el.zig });
-        } else if (std.mem.eql(u8, kind, "scalar")) {
-            const s = try scalar(try str(try get(t, "scalarType")));
-            const b = try get(p, "binding");
-            uniform_size = @max(uniform_size, try int(try get(b, "offset")) + try int(try get(b, "size")));
-            try w.print("        {f}: {s},\n", .{ std.zig.fmtId(pname), s.zig });
-        } else return error.UnsupportedParameter;
-    }
-    try w.writeAll("    };\n");
-    try w.print("    pub const uniform_size = {d};\n", .{uniform_size});
-
-    try w.writeAll("    pub const params = [_]zimt.Param{\n");
-    for (params, vk_params) |p, vp| {
-        const pname = try str(try get(p, "name"));
-        const t = try get(p, "type");
         const b = try get(p, "binding");
-        if (std.mem.eql(u8, try str(try get(t, "kind")), "resource")) {
-            const access = if (optStr(t, "access")) |a|
-                (if (std.mem.eql(u8, a, "readWrite")) "read_write" else if (std.mem.eql(u8, a, "write")) "write" else if (std.mem.eql(u8, a, "read")) "read" else return error.UnsupportedParameter)
-            else
-                "read";
-            try w.print("        .{{ .name = \"{s}\", .binding = .{{ .buffer = .{{ .metal_index = {d}, .vk_binding = {d}, .access = .{s} }} }} }},\n", .{
-                pname, try int(try get(b, "index")), try int(try get(try get(vp, "binding"), "index")), access,
-            });
+        const offset = try int(try get(b, "offset"));
+        const psize = try int(try get(b, "size"));
+        size = @max(size, offset + psize);
+        if (try bufferAccess(p)) |access| {
+            if (psize != 8 or offset % 8 != 0) return error.BadReflection;
+            max_align = 8;
+            var buf: [32]u8 = undefined;
+            const el = try s.element(&buf, offset);
+            try w.print("        /// {s}<{s}>\n", .{ if (access == .read) "RO" else "RW", el.slang });
+            try w.print("        {f}: zimt.Buffer({s}),\n", .{ std.zig.fmtId(pname), el.zig });
+            try decls.writer.print("        .{{ .name = \"{s}\", .offset = {d}, .kind = .{{ .buffer = .{{ .access = .{t}, .stride = {d} }} }} }},\n", .{ pname, offset, access, el.stride });
         } else {
-            try w.print("        .{{ .name = \"{s}\", .binding = .{{ .uniform = .{{ .offset = {d}, .size = {d} }} }} }},\n", .{ pname, try int(try get(b, "offset")), try int(try get(b, "size")) });
+            const t = try get(p, "type");
+            if (!std.mem.eql(u8, try str(try get(t, "kind")), "scalar")) return error.UnsupportedParameter;
+            const sc = try scalar(try str(try get(t, "scalarType")));
+            if (psize != sc.size) return error.BadReflection;
+            try w.print("        {f}: {s},\n", .{ std.zig.fmtId(pname), sc.zig });
+            try decls.writer.print("        .{{ .name = \"{s}\", .offset = {d}, .kind = .{{ .value = .{{ .size = {d} }} }} }},\n", .{ pname, offset, psize });
         }
     }
+    try w.writeAll("    };\n");
+    // As a C struct, which Metal's argument block is.
+    try w.print("    pub const arg_size = {d};\n", .{std.mem.alignForward(u32, size, max_align)});
+    try w.writeAll("    pub const params = [_]zimt.Param{\n");
+    try w.writeAll(decls.written());
     try w.writeAll("    };\n};\n");
 }

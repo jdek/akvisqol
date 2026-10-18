@@ -34,103 +34,127 @@
                     },
                     {
                         "name": "corr",
-                        "binding": {"kind": "constantBuffer", "index": 0},
+                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "vector",
-                                "elementCount": 2,
-                                "elementType": {
-                                    "kind": "scalar",
-                                    "scalarType": "float32"
-                                },
-                                "sizes": [
-                                    {"kind": "uniform", "value": 8, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "vector",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "constantBuffer", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "params",
-                        "binding": {"kind": "constantBuffer", "index": 1},
+                        "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "uint32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "uint",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "constantBuffer", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "top",
-                        "binding": {"kind": "constantBuffer", "index": 2},
+                        "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "uint32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "uint",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "constantBuffer", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "count",
-                        "binding": {"kind": "constantBuffer", "index": 3},
+                        "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "access": "readWrite",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "uint32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RW",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "uint",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "constantBuffer", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "cands",
-                        "binding": {"kind": "constantBuffer", "index": 4},
+                        "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0},
                         "type": {
-                            "kind": "resource",
-                            "baseShape": "structuredBuffer",
-                            "access": "readWrite",
-                            "resultType": {
-                                "kind": "scalar",
-                                "scalarType": "int32",
-                                "sizes": [
-                                    {"kind": "uniform", "value": 4, "alignment": 4}
-                                ]
-                            },
+                            "kind": "struct",
+                            "name": "RW",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "int",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
                             "sizes": [
-                                {"kind": "constantBuffer", "value": 1}
+                                {"kind": "uniform", "value": 8, "alignment": 8}
                             ]
                         }
                     },
                     {
                         "name": "log2_n",
-                        "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -141,7 +165,7 @@
                     },
                     {
                         "name": "total_chunks",
-                        "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -152,7 +176,7 @@
                     },
                     {
                         "name": "cap",
-                        "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                        "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
                             "scalarType": "uint32",
@@ -181,103 +205,127 @@
                 },
                 {
                     "name": "corr",
-                    "binding": {"kind": "constantBuffer", "index": 1},
+                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "vector",
-                            "elementCount": 2,
-                            "elementType": {
-                                "kind": "scalar",
-                                "scalarType": "float32"
-                            },
-                            "sizes": [
-                                {"kind": "uniform", "value": 8, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "vector",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "constantBuffer", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "params",
-                    "binding": {"kind": "constantBuffer", "index": 2},
+                    "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "uint32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "constantBuffer", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "top",
-                    "binding": {"kind": "constantBuffer", "index": 3},
+                    "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "uint32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "constantBuffer", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "count",
-                    "binding": {"kind": "constantBuffer", "index": 4},
+                    "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "access": "readWrite",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "uint32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RW",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "uint",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "constantBuffer", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "cands",
-                    "binding": {"kind": "constantBuffer", "index": 5},
+                    "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0},
                     "type": {
-                        "kind": "resource",
-                        "baseShape": "structuredBuffer",
-                        "access": "readWrite",
-                        "resultType": {
-                            "kind": "scalar",
-                            "scalarType": "int32",
-                            "sizes": [
-                                {"kind": "uniform", "value": 4, "alignment": 4}
-                            ]
-                        },
+                        "kind": "struct",
+                        "name": "RW",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "int",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
                         "sizes": [
-                            {"kind": "constantBuffer", "value": 1}
+                            {"kind": "uniform", "value": 8, "alignment": 8}
                         ]
                     }
                 },
                 {
                     "name": "log2_n",
-                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",
@@ -288,7 +336,7 @@
                 },
                 {
                     "name": "total_chunks",
-                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",
@@ -299,7 +347,7 @@
                 },
                 {
                     "name": "cap",
-                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0},
+                    "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
                         "scalarType": "uint32",

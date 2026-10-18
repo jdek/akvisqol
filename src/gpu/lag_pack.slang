@@ -10,9 +10,9 @@ import zimt;
 [numthreads(64, 1, 1)]
 void lag_pack(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float> signals,
-    uniform StructuredBuffer<uint> jobs,
-    uniform RWStructuredBuffer<float2> z,
+    uniform RO<float> signals,
+    uniform RO<uint> jobs,
+    uniform RW<float2> z,
     uniform uint log2_n,
     uniform uint total)
 {

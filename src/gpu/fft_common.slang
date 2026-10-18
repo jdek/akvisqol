@@ -4,6 +4,8 @@
 // Shared complex helpers for the Stockham FFT passes.
 module fft_common;
 
+import zimt;
+
 public float2 cmul(float2 a, float2 b)
 {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -12,7 +14,7 @@ public float2 cmul(float2 a, float2 b)
 // exp(sign · 2πi · t / n) from a two-level table, s = ceil(log2(n) / 2):
 //   tw[j]       = (cos, sin)(2π j / n),        j < 2^s
 //   tw[2^s + h] = (cos, sin)(2π h · 2^s / n),  h < n / 2^s
-public float2 twiddle(StructuredBuffer<float2> tw, uint t, uint log2_n, float sign)
+public float2 twiddle(RO<float2> tw, uint t, uint log2_n, float sign)
 {
     uint s = (log2_n + 1) >> 1;
     float2 w = cmul(tw[(1u << s) + (t >> s)], tw[t & ((1u << s) - 1)]);

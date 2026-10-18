@@ -10,9 +10,9 @@ import zimt;
 [numthreads(64, 1, 1)]
 void lag_max(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float2> corr,
-    uniform StructuredBuffer<uint> params,
-    uniform RWStructuredBuffer<uint> top,
+    uniform RO<float2> corr,
+    uniform RO<uint> params,
+    uniform RW<uint> top,
     uniform uint log2_n,
     uniform uint total_chunks)
 {
@@ -28,5 +28,5 @@ void lag_max(
         uint i = first + k;
         if (lag_valid(i, n, max_lag)) m = max(m, asuint(lag_abs(corr, row, i, log2_n)));
     }
-    if (m != 0) InterlockedMax(top[row], m);
+    if (m != 0) InterlockedMax(top.p[row], m);
 }

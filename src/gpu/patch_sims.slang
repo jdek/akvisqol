@@ -10,7 +10,7 @@
 import nsim_common;
 import zimt;
 
-float degAt(StructuredBuffer<float> deg, uint base, uint nf, int band, int col)
+float degAt(RO<float> deg, uint base, uint nf, int band, int col)
 {
     return uint(col) < nf ? deg[base + uint(band) * nf + uint(col)] : 0.0;
 }
@@ -19,12 +19,12 @@ float degAt(StructuredBuffer<float> deg, uint base, uint nf, int band, int col)
 [numthreads(64, 1, 1)]
 void patch_sims(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float> ref_spec,
-    uniform StructuredBuffer<float> deg_spec,
-    uniform StructuredBuffer<uint> rows,
-    uniform StructuredBuffer<float> mu_ref,
-    uniform StructuredBuffer<float> srs_ref,
-    uniform RWStructuredBuffer<float> out,
+    uniform RO<float> ref_spec,
+    uniform RO<float> deg_spec,
+    uniform RO<uint> rows,
+    uniform RO<float> mu_ref,
+    uniform RO<float> srs_ref,
+    uniform RW<float> out,
     uniform uint num_rows,
     uniform uint num_tasks,
     uniform uint num_bands,

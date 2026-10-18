@@ -3,20 +3,25 @@
 A small compute runtime for [Slang](https://shader-slang.org) kernels on
 Metal, CUDA and Vulkan, written in Zig.
 
+Kernels take buffers as device addresses, not bindings: a buffer
+parameter is `RO<T>` or `RW<T>` (from zimt.slang), a 64-bit pointer. A
+kernel's parameters are one block of addresses and scalars,
+laid out as a C struct and identical on every backend: Vulkan pushes it as
+push constants (buffer device addresses), Metal binds it at index 0
+(`gpuAddress`), and CUDA passes it as the kernel parameters. There are no
+descriptors, binding numbers or buffer indices.
+
 Its build runs `slangc -reflection-json` once per kernel and turns the
 result into a Zig binding: a comptime description of the kernel with a
-typed `Args` struct: buffers are `zimt.Buffer(T)` with `T` the reflected
-element (`StructuredBuffer<float2>` is `Buffer([2]f32)`), so a mismatched
-buffer doesn't compile. A dispatch takes its arguments by name, and each
-backend lowers them at comptime:
-- Metal packs the uniforms at their reflected offsets and binds buffers at
-  their reflected indices;
-- CUDA builds the kernel parameter array;
-- Vulkan pushes the uniforms as push constants and the buffers as push
-  descriptors at their reflected SPIR-V bindings.
-
-Nothing about the layout is decided at run time, and when only one backend
-is compiled in, the backend switch folds away too.
+typed `Args` struct: buffers are `zimt.Buffer(T)` with `T` the element
+(`RO<float2>` is `Buffer([2]f32)`, read from the SPIR-V), so a mismatched
+buffer doesn't compile. Scalar and vector elements are laid out as in C
+and Zig on every backend: a `float3` is `[3]f32`, 12 bytes apart. This is checked: bindgen
+fails if the Metal and SPIR-V reflections disagree, and at comptime each
+element's `@sizeOf` must equal the reflected stride and each parameter
+must fit its reflected slot. A dispatch takes its arguments by name and
+packs them at comptime-known offsets; when only one backend is compiled
+in, the backend switch folds away too.
 
 ```zig
 const zimt = @import("zimt");
@@ -42,8 +47,8 @@ import zimt;
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void saxpy(uint3 tid: SV_DispatchThreadID,
-           uniform StructuredBuffer<float> x,
-           uniform RWStructuredBuffer<float> y,
+           uniform RO<float> x,
+           uniform RW<float> y,
            uniform float a,
            uniform uint n)
 {
@@ -87,7 +92,7 @@ b.step("shaders", "Regenerate MSL, SPIR-V + reflection").dependOn(zimt.addRegene
   builds need no Slang install. Run `zig build shaders` after editing a
   kernel; it needs `slangc` and `spirv-val`, which checks the SPIR-V
   against Vulkan 1.2. Bindgen checks that the Metal and SPIR-V reflections
-  agree (parameters, uniform layout, thread-group size).
+  agree (parameters, layout, thread-group size).
 - **Kernels compile to `.metallib`** at build time with IEEE math, for
   macOS 13 by default (`macos_min`, `fast_math`).
 - **CUDA (`.cuda = true`)** compiles PTX with `slangc`, which needs NVRTC.
@@ -105,7 +110,7 @@ b.step("shaders", "Regenerate MSL, SPIR-V + reflection").dependOn(zimt.addRegene
   The loader is `dlopen`ed (`libvulkan.so.1`, `vulkan-1.dll`). musl
   targets can't load it, so `-Dvulkan` fails the build there.
 - **Kernels `import zimt;`**, which zimt adds to the Slang include path
-  (zimt's `src/slang`), for `zimt_index`.
+  (zimt's `src/slang`), for `RO`/`RW` and `zimt_index`.
 - **One entry point per kernel**: `.name` compiles `<name>.slang`'s
   `<name>`; `.source` and `.entry` pick another file and a specialized
   generic (`fft_pass<Radix16>`), so one generic kernel can be several.
@@ -121,9 +126,11 @@ Xcode.
 
 ## Semantics
 
-- **Arguments:** `zimt.Buffer` for `StructuredBuffer` /
-  `RWStructuredBuffer`, and `u32`, `i32` or `f32` for scalar uniforms.
-  Bindgen rejects other parameter types.
+- **Arguments:** `zimt.Buffer(T)` for `RO<T>` / `RW<T>` with `T` a
+  scalar, vector or struct of them (f64 in `float64` entries), and `u32`,
+  `i32`, `f32` or `f64` for scalar uniforms. Bindgen rejects other parameter types, including
+  `StructuredBuffer`s and bare pointers. Atomics go through the pointer:
+  `InterlockedAdd(count.p[i], 1)`.
 - **Ordering:** dispatches and transfers run in the order they are
   enqueued, and each sees the previous ones' writes.
 - **Fences:** `submit()` returns a fence, a point on a monotonic
@@ -146,11 +153,11 @@ Xcode.
     host-visible cached memory on Vulkan), so `download` is a memcpy once
     the device is done. Not for data kernels re-read, nor for atomics.
 - **Memory** is zimt's, the same on every backend. Backends provide
-  blocks; `alloc` suballocates 64 MiB shared blocks per kind with a buddy
-  allocator (power-of-two classes from 256 B, so every offset is
-  256-byte aligned), and a buffer larger than a block gets one of its
-  own. A buffer's `mem` is a `zimt.Allocation` (block, offset, size);
-  backends bind it by offset. `free` defers until the work that may use
+  blocks; `alloc` suballocates shared blocks (64 MiB for `.device`) per kind
+  with a buddy allocator (power-of-two classes from 256 B, so every
+  allocation is 256-byte aligned; `Buffer.sub` views need not be), and a buffer larger than a block gets one of its
+  own. A buffer's `mem` is a `zimt.Allocation` (block, offset, size),
+  and kernels see its `address()`. `free` defers until the work that may use
   the buffer has completed. A large buffer's block is a whole number of
   block sizes, so nearby sizes reuse it. Emptied blocks are kept for reuse up
   to an eighth of the device's budget per kind (at least
@@ -172,32 +179,31 @@ Xcode.
   CUDA) with enqueued copies; `zero` fills whole words and uploads the
   ragged ends.
 - **Backend interface:** `open`/`close`, `kernel`/`release`,
-  `blockAlloc`/`blockFree`, `budget`, `copy` and `fill` between block ranges,
-  `dispatch`, `submit`/`finish`. Everything else lives in `root.zig`.
+  `blockAlloc`/`blockFree` (with each block's device address), `budget`,
+  `copy` and `fill` between block ranges, `dispatch`, `submit`/`finish`. Everything else lives in `root.zig`.
 - **`dispatch1d`** launches at least `n` threads. Up to 32768 groups it is
   a single row; beyond that it folds into rows of 32768 groups (Vulkan
   only guarantees 65535 groups per dimension), so kernels take their
   index from `zimt_index(tid)` rather than `tid.x`, and
   bounds-check it.
-- **Access:** each buffer parameter's reflected access (`read`, `write`
-  or `read_write`) is in `K.params`. Vulkan uses it to order commands
-  (see [Vulkan](#vulkan)); Metal and CUDA order dispatches themselves.
-  Slang reflects every `RWStructuredBuffer` as `read_write`.
+- **Access:** each buffer parameter's access (`read` for `RO`,
+  `read_write` for `RW`) is in `K.params`. Vulkan uses it to order
+  commands (see [Vulkan](#vulkan)); Metal makes the buffers resident with
+  it; CUDA orders dispatches itself.
 - **Threads:** a `Device` is not thread-safe, so serialise access to it.
 
 ## Vulkan
 
-Vulkan 1.2 devices with timeline semaphores and `VK_KHR_push_descriptor`
+Vulkan 1.2 devices with timeline semaphores and buffer device addresses
 qualify; others are skipped. One compute queue (compute-only if there is
-one), push descriptors and push constants, so there are no descriptor
-pools.
+one); kernel arguments are push constants, so there are no descriptors.
 
 - **Device:** the first discrete GPU, then integrated, then others, CPU
   implementations last. `ZIMT_VULKAN_DEVICE=<index|name substring>`
   overrides it (e.g. `llvmpipe` for Mesa's lavapipe). `Device.name()` is
   `<device> (<driver>)`.
 - **Memory:** each block is one `VkDeviceMemory` with one `VkBuffer`
-  over it; buffers bind through push descriptors at their offset. Where
+  over it, addressed with `vkGetBufferDeviceAddress`. Where
   device-local, host-visible memory is most of the device's memory (APUs,
   ReBAR, CPU drivers), blocks live there and are mapped, as on Metal.
   Otherwise (e.g. a 256 MiB BAR window without ReBAR) they are
@@ -206,7 +212,9 @@ pools.
 - **Validation:** `ZIMT_VULKAN_VALIDATION=1` enables
   `VK_LAYER_KHRONOS_validation` with synchronisation validation. Errors
   are logged and fail the next `submit`, `wait` or transfer; a missing
-  layer fails `Device.open` loudly (set `VK_LAYER_PATH`).
+  layer fails `Device.open` loudly (set `VK_LAYER_PATH`). Accesses through
+  device addresses are invisible to synchronisation validation; zimt's
+  own barriers (below) cover them.
 - **Barriers** come from each kernel's reflected accesses, resolved at
   comptime into the buffers it reads and writes. A command gets a barrier
   only if it reads or writes bytes written since the last barrier, or

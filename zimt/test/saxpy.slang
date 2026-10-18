@@ -9,8 +9,8 @@ import zimt;
 [numthreads(32, 1, 1)]
 void saxpy(
     uint3 tid: SV_DispatchThreadID,
-    uniform StructuredBuffer<float> x,
-    uniform RWStructuredBuffer<float> y,
+    uniform RO<float> x,
+    uniform RW<float> y,
     uniform float a,
     uniform uint n)
 {

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
-//! Vulkan 1.2 compute: SPIR-V with push descriptors, push constants, one
-//! queue and a timeline semaphore for fences.
+//! Vulkan 1.2 compute: kernel arguments are push constants holding buffer
+//! device addresses; one queue and a timeline semaphore for fences.
 //!
 //!   ZIMT_VULKAN_DEVICE=<index|name substring>  pick a device
 //!   ZIMT_VULKAN_VALIDATION=1    validation layer; errors fail the next submit
@@ -66,16 +66,14 @@ const DeviceFns = struct {
     vkMapMemory: Pfn("vkMapMemory"),
     vkCreateShaderModule: Pfn("vkCreateShaderModule"),
     vkDestroyShaderModule: Pfn("vkDestroyShaderModule"),
-    vkCreateDescriptorSetLayout: Pfn("vkCreateDescriptorSetLayout"),
-    vkDestroyDescriptorSetLayout: Pfn("vkDestroyDescriptorSetLayout"),
     vkCreatePipelineLayout: Pfn("vkCreatePipelineLayout"),
     vkDestroyPipelineLayout: Pfn("vkDestroyPipelineLayout"),
     vkCreateComputePipelines: Pfn("vkCreateComputePipelines"),
     vkDestroyPipeline: Pfn("vkDestroyPipeline"),
     vkCmdBindPipeline: Pfn("vkCmdBindPipeline"),
-    vkCmdPushDescriptorSetKHR: Pfn("vkCmdPushDescriptorSetKHR"),
     vkCmdPushConstants: Pfn("vkCmdPushConstants"),
     vkCmdDispatch: Pfn("vkCmdDispatch"),
+    vkGetBufferDeviceAddress: Pfn("vkGetBufferDeviceAddress"),
     vkCmdPipelineBarrier: Pfn("vkCmdPipelineBarrier"),
     vkCmdCopyBuffer: Pfn("vkCmdCopyBuffer"),
     vkCmdFillBuffer: Pfn("vkCmdFillBuffer"),
@@ -127,16 +125,16 @@ fn envFlag(name: [*:0]const u8) bool {
     return v.len > 0 and !std.mem.eql(u8, v, "0");
 }
 
-/// One VkBuffer over the whole allocation; buffers bind by offset.
+/// One VkBuffer over the whole allocation.
 const BlockRec = struct {
     buffer: c.VkBuffer,
     memory: c.VkDeviceMemory,
     map: ?[*]u8,
+    addr: u64,
 };
 
 const KernelRec = struct {
     shader: c.VkShaderModule,
-    set_layout: c.VkDescriptorSetLayout,
     layout: c.VkPipelineLayout,
     pipeline: c.VkPipeline,
 };
@@ -314,10 +312,11 @@ const Candidate = struct {
 fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDeviceProperties) union(enum) { ok: Candidate, unsuitable: []const u8 } {
     if (props.apiVersion < api_version_1_2) return .{ .unsuitable = "Vulkan < 1.2" };
 
-    var timeline: c.VkPhysicalDeviceTimelineSemaphoreFeatures = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES };
-    var features: c.VkPhysicalDeviceFeatures2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &timeline };
+    var v12: c.VkPhysicalDeviceVulkan12Features = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    var features: c.VkPhysicalDeviceFeatures2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &v12 };
     st.inst.vkGetPhysicalDeviceFeatures2(pd, &features);
-    if (timeline.timelineSemaphore != c.VK_TRUE) return .{ .unsuitable = "no timelineSemaphore" };
+    if (v12.timelineSemaphore != c.VK_TRUE) return .{ .unsuitable = "no timelineSemaphore" };
+    if (v12.bufferDeviceAddress != c.VK_TRUE) return .{ .unsuitable = "no bufferDeviceAddress" };
 
     var n: u32 = 0;
     if (!ok(st.inst.vkEnumerateDeviceExtensionProperties(pd, null, &n, null))) return .{ .unsuitable = "cannot list extensions" };
@@ -330,7 +329,6 @@ fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDevicePr
             return false;
         }
     }.f;
-    if (!has(exts[0..n], c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) return .{ .unsuitable = "no " ++ c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME };
     const memory_budget = has(exts[0..n], c.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
     var families: [64]c.VkQueueFamilyProperties = undefined;
@@ -457,17 +455,18 @@ fn createDevice(st: *State) !void {
         .queueCount = 1,
         .pQueuePriorities = &priority,
     };
-    var timeline: c.VkPhysicalDeviceTimelineSemaphoreFeatures = .{
-        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+    var v12: c.VkPhysicalDeviceVulkan12Features = .{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .timelineSemaphore = c.VK_TRUE,
+        .bufferDeviceAddress = c.VK_TRUE,
     };
-    const exts = [_][*:0]const u8{ c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, c.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME };
+    const exts = [_][*:0]const u8{c.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME};
     const info: c.VkDeviceCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &timeline,
+        .pNext = &v12,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_info,
-        .enabledExtensionCount = if (st.memory_budget) exts.len else 1,
+        .enabledExtensionCount = if (st.memory_budget) exts.len else 0,
         .ppEnabledExtensionNames = &exts,
     };
     const r = st.inst.vkCreateDevice(st.physical, &info, null, &st.device);
@@ -541,17 +540,14 @@ fn entryPointName(words: []const u32) ?[*:0]const u8 {
 
 pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(K) {
     const st = state(d);
-    const n_buf = comptime zimt.bufferCount(K);
     const lim = &st.limits;
     for (K.threads, lim.maxComputeWorkGroupSize) |t, max| if (t > max) {
         log.err("kernel '{s}': {any} threads/group exceeds maxComputeWorkGroupSize {any}", .{ K.name, K.threads, lim.maxComputeWorkGroupSize });
         return zimt.Error.DeviceError;
     };
-    if (K.threads[0] * K.threads[1] * K.threads[2] > lim.maxComputeWorkGroupInvocations or
-        n_buf > lim.maxPerStageDescriptorStorageBuffers or K.uniform_size > lim.maxPushConstantsSize)
-    {
-        log.err("kernel '{s}' exceeds device limits ({d} invocations, {d} storage buffers, {d} B push constants)", .{
-            K.name, lim.maxComputeWorkGroupInvocations, lim.maxPerStageDescriptorStorageBuffers, lim.maxPushConstantsSize,
+    if (K.threads[0] * K.threads[1] * K.threads[2] > lim.maxComputeWorkGroupInvocations or K.arg_size > lim.maxPushConstantsSize) {
+        log.err("kernel '{s}' exceeds device limits ({d} invocations, {d} B push constants)", .{
+            K.name, lim.maxComputeWorkGroupInvocations, lim.maxPushConstantsSize,
         });
         return zimt.Error.DeviceError;
     }
@@ -569,7 +565,7 @@ pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(
     };
 
     const rec = try st.allocator.create(KernelRec);
-    rec.* = .{ .shader = null, .set_layout = null, .layout = null, .pipeline = null };
+    rec.* = .{ .shader = null, .layout = null, .pipeline = null };
     errdefer destroyKernel(st, rec);
     const module_info: c.VkShaderModuleCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -578,37 +574,10 @@ pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(
     };
     try check(st.dev.vkCreateShaderModule(st.device, &module_info, null, &rec.shader), "vkCreateShaderModule");
 
-    const bindings = comptime blk: {
-        var b: [@max(n_buf, 1)]c.VkDescriptorSetLayoutBinding = undefined;
-        var i: usize = 0;
-        for (K.params) |p| switch (p.binding) {
-            .buffer => |buf| {
-                b[i] = .{
-                    .binding = buf.vk_binding,
-                    .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 1,
-                    .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-                };
-                i += 1;
-            },
-            .uniform => {},
-        };
-        break :blk b;
-    };
-    const set_info: c.VkDescriptorSetLayoutCreateInfo = .{
-        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
-        .bindingCount = n_buf,
-        .pBindings = &bindings,
-    };
-    try check(st.dev.vkCreateDescriptorSetLayout(st.device, &set_info, null, &rec.set_layout), "vkCreateDescriptorSetLayout");
-
-    const range: c.VkPushConstantRange = .{ .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = K.uniform_size };
+    const range: c.VkPushConstantRange = .{ .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = K.arg_size };
     const layout_info: c.VkPipelineLayoutCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &rec.set_layout,
-        .pushConstantRangeCount = if (K.uniform_size > 0) 1 else 0,
+        .pushConstantRangeCount = if (K.arg_size > 0) 1 else 0,
         .pPushConstantRanges = &range,
     };
     try check(st.dev.vkCreatePipelineLayout(st.device, &layout_info, null, &rec.layout), "vkCreatePipelineLayout");
@@ -630,7 +599,6 @@ pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(
 fn destroyKernel(st: *State, rec: *KernelRec) void {
     if (rec.pipeline != null) st.dev.vkDestroyPipeline(st.device, rec.pipeline, null);
     if (rec.layout != null) st.dev.vkDestroyPipelineLayout(st.device, rec.layout, null);
-    if (rec.set_layout != null) st.dev.vkDestroyDescriptorSetLayout(st.device, rec.set_layout, null);
     if (rec.shader != null) st.dev.vkDestroyShaderModule(st.device, rec.shader, null);
     st.allocator.destroy(rec);
 }
@@ -644,11 +612,11 @@ pub fn release(d: *zimt.Device, handle: usize, _: usize) void {
 fn createBlock(st: *State, size: u64, type_index: ?u32) !*BlockRec {
     const rec = try st.allocator.create(BlockRec);
     errdefer st.allocator.destroy(rec);
-    rec.* = .{ .buffer = null, .memory = null, .map = null };
+    rec.* = .{ .buffer = null, .memory = null, .map = null, .addr = 0 };
     const info: c.VkBufferCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = size,
-        .usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .usage = c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = c.VK_SHARING_MODE_EXCLUSIVE,
     };
     try check(st.dev.vkCreateBuffer(st.device, &info, null, &rec.buffer), "vkCreateBuffer");
@@ -665,14 +633,21 @@ fn createBlock(st: *State, size: u64, type_index: ?u32) !*BlockRec {
         break :blk any orelse return zimt.Error.OutOfMemory;
     };
     if (req.memoryTypeBits & (@as(u32, 1) << @intCast(t)) == 0) return zimt.Error.OutOfMemory;
+    const flags: c.VkMemoryAllocateFlagsInfo = .{
+        .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+        .flags = c.VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+    };
     const alloc_info: c.VkMemoryAllocateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &flags,
         .allocationSize = req.size,
         .memoryTypeIndex = t,
     };
     try check(st.dev.vkAllocateMemory(st.device, &alloc_info, null, &rec.memory), "vkAllocateMemory");
     errdefer st.dev.vkFreeMemory(st.device, rec.memory, null);
     try check(st.dev.vkBindBufferMemory(st.device, rec.buffer, rec.memory, 0), "vkBindBufferMemory");
+    const ai: c.VkBufferDeviceAddressInfo = .{ .sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = rec.buffer };
+    rec.addr = st.dev.vkGetBufferDeviceAddress(st.device, &ai);
     if (st.memory.memoryTypes[t].propertyFlags & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT != 0) {
         var p: ?*anyopaque = null;
         try check(st.dev.vkMapMemory(st.device, rec.memory, 0, c.VK_WHOLE_SIZE, 0, &p), "vkMapMemory");
@@ -699,7 +674,7 @@ pub fn blockAlloc(d: *zimt.Device, bytes: usize, kind: zimt.BlockKind) !zimt.Raw
         else
             try createBlock(st, bytes, null),
     };
-    return .{ .handle = @intFromPtr(rec), .host = rec.map };
+    return .{ .handle = @intFromPtr(rec), .host = rec.map, .addr = rec.addr };
 }
 
 /// Unknown without VK_EXT_memory_budget.
@@ -845,7 +820,7 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
     const st = state(d);
     const kr: *KernelRec = @ptrFromInt(handle);
     // dispatch1d keeps within the guaranteed 65535.
-    for (groups, st.limits.maxComputeWorkGroupCount) |g, max| if (g > max) {
+    for (groups, st.limits.maxComputeWorkGroupCount) |n, max| if (n > max) {
         log.err("kernel '{s}': {any} groups exceed maxComputeWorkGroupCount {any}", .{ K.name, groups, st.limits.maxComputeWorkGroupCount });
         return zimt.Error.DeviceError;
     };
@@ -857,46 +832,22 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
     inline for (acc.writes, &writes) |name, *r| r.* = Range.of(@field(args, name).mem.span(0, @field(args, name).mem.size));
     order(st, cb, &reads, &writes);
     st.dev.vkCmdBindPipeline(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.pipeline);
-
-    const n_buf = comptime zimt.bufferCount(K);
-    if (n_buf > 0) {
-        var infos: [n_buf]c.VkDescriptorBufferInfo = undefined;
-        var descs: [n_buf]c.VkWriteDescriptorSet = undefined;
-        comptime var i: usize = 0;
-        inline for (K.params) |p| switch (p.binding) {
-            .buffer => |b| {
-                const mem = @field(args, p.name).mem;
-                infos[i] = .{ .buffer = blockRec(mem.block).buffer, .offset = mem.offset, .range = @max(mem.size, 4) };
-                descs[i] = .{
-                    .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstBinding = b.vk_binding,
-                    .descriptorCount = 1,
-                    .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .pBufferInfo = &infos[i],
-                };
-                i += 1;
-            },
-            .uniform => {},
-        };
-        st.dev.vkCmdPushDescriptorSetKHR(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.layout, 0, n_buf, &descs);
-    }
-    if (K.uniform_size > 0) {
-        const words = zimt.packUniforms(K, args);
-        st.dev.vkCmdPushConstants(cb, kr.layout, c.VK_SHADER_STAGE_COMPUTE_BIT, 0, K.uniform_size, &words);
+    if (K.arg_size > 0) {
+        const bytes = zimt.packArgs(K, args);
+        st.dev.vkCmdPushConstants(cb, kr.layout, c.VK_SHADER_STAGE_COMPUTE_BIT, 0, K.arg_size, &bytes);
     }
     st.dev.vkCmdDispatch(cb, groups[0], groups[1], groups[2]);
 }
 
-/// `read_write` parameters are in both.
 fn accesses(comptime K: type) struct { reads: []const []const u8, writes: []const []const u8 } {
     var reads: []const []const u8 = &.{};
     var writes: []const []const u8 = &.{};
-    for (K.params) |p| switch (p.binding) {
+    for (K.params) |p| switch (p.kind) {
         .buffer => |b| {
-            if (b.access != .write) reads = reads ++ .{p.name};
-            if (b.access != .read) writes = writes ++ .{p.name};
+            reads = reads ++ .{p.name};
+            if (b.access == .read_write) writes = writes ++ .{p.name};
         },
-        .uniform => {},
+        .value => {},
     };
     return .{ .reads = reads, .writes = writes };
 }

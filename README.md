@@ -170,7 +170,7 @@ glibc 2.17 on Linux). macOS wheels with Metal need a macOS host.
 | `cpu` | always | f64 reference |
 | `metal` | `-Dmetal` | needs the Xcode Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) |
 | `cuda` | `-Dcuda` | needs `slangc` with NVRTC to build (`nix develop .#cuda`) and fetches the CUDA headers; loads `libcuda` at run time |
-| `vulkan` | `-Dvulkan` | Vulkan 1.2 with `VK_KHR_push_descriptor`; fetches the Vulkan headers to build; loads the Vulkan loader at run time; not on musl |
+| `vulkan` | `-Dvulkan` | Vulkan 1.2 with buffer device addresses; fetches the Vulkan headers to build; loads the Vulkan loader at run time; not on musl |
 
 The model talks to an `Accelerator` interface ([`src/accel.zig`](src/accel.zig))
 covering the three hot spots: gammatone spectrograms, the DP
