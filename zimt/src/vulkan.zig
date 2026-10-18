@@ -17,8 +17,6 @@ const log = std.log.scoped(.zimt_vulkan);
 
 const api_version_1_2: u32 = (1 << 22) | (2 << 12);
 const spirv_magic: u32 = 0x07230203;
-/// Largest staging buffer; bigger transfers go in chunks.
-const staging_max: u64 = 32 << 20;
 
 fn Pfn(comptime name: []const u8) type {
     return @typeInfo(@field(c, "PFN_" ++ name)).optional.child;
@@ -37,6 +35,7 @@ const InstanceFns = struct {
     vkGetPhysicalDeviceFeatures2: Pfn("vkGetPhysicalDeviceFeatures2"),
     vkGetPhysicalDeviceQueueFamilyProperties: Pfn("vkGetPhysicalDeviceQueueFamilyProperties"),
     vkGetPhysicalDeviceMemoryProperties: Pfn("vkGetPhysicalDeviceMemoryProperties"),
+    vkGetPhysicalDeviceMemoryProperties2: Pfn("vkGetPhysicalDeviceMemoryProperties2"),
     vkEnumerateDeviceExtensionProperties: Pfn("vkEnumerateDeviceExtensionProperties"),
     vkCreateDevice: Pfn("vkCreateDevice"),
     vkGetDeviceProcAddr: Pfn("vkGetDeviceProcAddr"),
@@ -128,11 +127,11 @@ fn envFlag(name: [*:0]const u8) bool {
     return v.len > 0 and !std.mem.eql(u8, v, "0");
 }
 
-const BufferRec = struct {
+/// One VkBuffer over the whole allocation; buffers bind by offset.
+const BlockRec = struct {
     buffer: c.VkBuffer,
     memory: c.VkDeviceMemory,
     map: ?[*]u8,
-    size: u64,
 };
 
 const KernelRec = struct {
@@ -157,6 +156,9 @@ const State = struct {
     validation_seen: u32 = 0,
     physical: c.VkPhysicalDevice = null,
     family: u32 = 0,
+    memory_budget: bool = false,
+    device_heap: u32 = 0,
+    host_heap: u32 = 0,
     device: c.VkDevice = null,
     dev: DeviceFns = undefined,
     queue: c.VkQueue = null,
@@ -166,7 +168,6 @@ const State = struct {
     memory: c.VkPhysicalDeviceMemoryProperties = undefined,
     mapped_type: ?u32 = null,
     staging_type: u32 = 0,
-    staging: ?*BufferRec = null,
     recording: c.VkCommandBuffer = null,
     /// Capacity covers all `cb_count`, so recycling can't fail.
     free_cbs: std.ArrayList(c.VkCommandBuffer) = .empty,
@@ -304,6 +305,7 @@ const Candidate = struct {
     physical: c.VkPhysicalDevice,
     family: u32,
     rank: u8,
+    memory_budget: bool,
 };
 
 fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDeviceProperties) union(enum) { ok: Candidate, unsuitable: []const u8 } {
@@ -319,9 +321,14 @@ fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDevicePr
     const exts = st.allocator.alloc(c.VkExtensionProperties, n) catch return .{ .unsuitable = "out of memory" };
     defer st.allocator.free(exts);
     if (!ok(st.inst.vkEnumerateDeviceExtensionProperties(pd, null, &n, exts.ptr))) return .{ .unsuitable = "cannot list extensions" };
-    for (exts[0..n]) |e| {
-        if (std.mem.eql(u8, std.mem.sliceTo(&e.extensionName, 0), c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) break;
-    } else return .{ .unsuitable = "no " ++ c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME };
+    const has = struct {
+        fn f(list: []const c.VkExtensionProperties, name: []const u8) bool {
+            for (list) |e| if (std.mem.eql(u8, std.mem.sliceTo(&e.extensionName, 0), name)) return true;
+            return false;
+        }
+    }.f;
+    if (!has(exts[0..n], c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) return .{ .unsuitable = "no " ++ c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME };
+    const memory_budget = has(exts[0..n], c.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
     var families: [64]c.VkQueueFamilyProperties = undefined;
     var nf: u32 = families.len;
@@ -340,7 +347,7 @@ fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDevicePr
         c.VK_PHYSICAL_DEVICE_TYPE_CPU => 4,
         else => 3,
     };
-    return .{ .ok = .{ .physical = pd, .family = family orelse return .{ .unsuitable = "no compute queue" }, .rank = rank } };
+    return .{ .ok = .{ .physical = pd, .family = family orelse return .{ .unsuitable = "no compute queue" }, .rank = rank, .memory_budget = memory_budget } };
 }
 
 fn deviceName(st: *State, pd: c.VkPhysicalDevice, buf: []u8) []const u8 {
@@ -391,6 +398,7 @@ fn pickDevice(st: *State, d: *zimt.Device) !void {
     };
     st.physical = pick.physical;
     st.family = pick.family;
+    st.memory_budget = pick.memory_budget;
     d.name_len = deviceName(st, pick.physical, &d.name_buf).len;
 
     var props: c.VkPhysicalDeviceProperties2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
@@ -431,6 +439,10 @@ fn chooseMemory(st: *State) void {
             st.staging_type = @intCast(i);
         }
     }
+    st.host_heap = m.memoryTypes[st.staging_type].heapIndex;
+    st.device_heap = if (st.mapped_type) |t| m.memoryTypes[t].heapIndex else for (m.memoryTypes[0..m.memoryTypeCount]) |t| {
+        if (t.propertyFlags & local != 0) break t.heapIndex;
+    } else 0;
 }
 
 fn createDevice(st: *State) !void {
@@ -446,13 +458,13 @@ fn createDevice(st: *State) !void {
         .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
         .timelineSemaphore = c.VK_TRUE,
     };
-    const exts = [_][*:0]const u8{c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+    const exts = [_][*:0]const u8{ c.VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, c.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME };
     const info: c.VkDeviceCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &timeline,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_info,
-        .enabledExtensionCount = exts.len,
+        .enabledExtensionCount = if (st.memory_budget) exts.len else 1,
         .ppEnabledExtensionNames = &exts,
     };
     const r = st.inst.vkCreateDevice(st.physical, &info, null, &st.device);
@@ -492,7 +504,6 @@ fn createDevice(st: *State) !void {
 fn destroy(st: *State) void {
     if (st.device != null) {
         _ = st.dev.vkDeviceWaitIdle(st.device);
-        if (st.staging) |s| freeRec(st, s);
         if (st.timeline != null) st.dev.vkDestroySemaphore(st.device, st.timeline, null);
         // Frees every command buffer from it too.
         if (st.pool != null) st.dev.vkDestroyCommandPool(st.device, st.pool, null);
@@ -626,11 +637,11 @@ pub fn release(d: *zimt.Device, handle: usize, _: usize) void {
     destroyKernel(state(d), @ptrFromInt(handle));
 }
 
-/// A buffer in memory type `type_index`, mapped if host-visible.
-fn allocRec(st: *State, size: u64, type_index: ?u32, local: bool) !*BufferRec {
-    const rec = try st.allocator.create(BufferRec);
+/// `type_index` null: the first allowed device-local type.
+fn createBlock(st: *State, size: u64, type_index: ?u32) !*BlockRec {
+    const rec = try st.allocator.create(BlockRec);
     errdefer st.allocator.destroy(rec);
-    rec.* = .{ .buffer = null, .memory = null, .map = null, .size = size };
+    rec.* = .{ .buffer = null, .memory = null, .map = null };
     const info: c.VkBufferCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = size,
@@ -642,12 +653,10 @@ fn allocRec(st: *State, size: u64, type_index: ?u32, local: bool) !*BufferRec {
     var req: c.VkMemoryRequirements = undefined;
     st.dev.vkGetBufferMemoryRequirements(st.device, rec.buffer, &req);
     const t = type_index orelse blk: {
-        // First allowed type with all wanted flags, else the first allowed.
-        const want: u32 = if (local) c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT else 0;
         var any: ?u32 = null;
         for (st.memory.memoryTypes[0..st.memory.memoryTypeCount], 0..) |mt, i| {
             if (req.memoryTypeBits & (@as(u32, 1) << @intCast(i)) == 0) continue;
-            if (mt.propertyFlags & want == want) break :blk @as(u32, @intCast(i));
+            if (mt.propertyFlags & c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT != 0) break :blk @as(u32, @intCast(i));
             if (any == null) any = @intCast(i);
         }
         break :blk any orelse return zimt.Error.OutOfMemory;
@@ -669,34 +678,48 @@ fn allocRec(st: *State, size: u64, type_index: ?u32, local: bool) !*BufferRec {
     return rec;
 }
 
-fn freeRec(st: *State, rec: *BufferRec) void {
+/// Readback falls back to device memory if the driver won't back storage
+/// buffers with host memory.
+pub fn blockAlloc(d: *zimt.Device, bytes: usize, kind: zimt.BlockKind) !zimt.RawBlock {
+    const st = state(d);
+    const rec = switch (kind) {
+        .staging => try createBlock(st, bytes, st.staging_type),
+        .readback => createBlock(st, bytes, st.staging_type) catch |e| switch (e) {
+            zimt.Error.OutOfMemory => try createBlock(st, bytes, st.mapped_type),
+            else => return e,
+        },
+        .device => if (st.mapped_type) |t|
+            createBlock(st, bytes, t) catch |e| switch (e) {
+                zimt.Error.OutOfMemory => try createBlock(st, bytes, null),
+                else => return e,
+            }
+        else
+            try createBlock(st, bytes, null),
+    };
+    return .{ .handle = @intFromPtr(rec), .host = rec.map };
+}
+
+/// Unknown without VK_EXT_memory_budget.
+pub fn budget(d: *zimt.Device, kind: zimt.BlockKind) ?zimt.Budget {
+    const st = state(d);
+    if (!st.memory_budget) return null;
+    var b: c.VkPhysicalDeviceMemoryBudgetPropertiesEXT = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+    var props: c.VkPhysicalDeviceMemoryProperties2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &b };
+    st.inst.vkGetPhysicalDeviceMemoryProperties2(st.physical, &props);
+    const heap = if (kind == .device) st.device_heap else st.host_heap;
+    return .{ .used = b.heapUsage[heap], .limit = b.heapBudget[heap] };
+}
+
+pub fn blockFree(d: *zimt.Device, blk: *const zimt.Block) void {
+    const st = state(d);
+    const rec = blockRec(blk);
     st.dev.vkDestroyBuffer(st.device, rec.buffer, null);
     st.dev.vkFreeMemory(st.device, rec.memory, null);
     st.allocator.destroy(rec);
 }
 
-pub fn alloc(d: *zimt.Device, bytes: usize) !zimt.Buffer {
-    const st = state(d);
-    const size: u64 = @max(bytes, 4);
-    // Host-mapped where that is the device's main memory; device-local when
-    // it isn't, or when the mapped heap is full.
-    const rec = if (st.mapped_type) |t|
-        allocRec(st, size, t, true) catch |e| switch (e) {
-            zimt.Error.OutOfMemory => try allocRec(st, size, null, true),
-            else => return e,
-        }
-    else
-        try allocRec(st, size, null, true);
-    return .{ .handle = @intFromPtr(rec), .size = bytes, .host = rec.map };
-}
-
-pub fn free(d: *zimt.Device, buf: zimt.Buffer) void {
-    idleIfBusy(d);
-    freeRec(state(d), @ptrFromInt(buf.handle));
-}
-
-fn bufRec(buf: zimt.Buffer) *BufferRec {
-    return @ptrFromInt(buf.handle);
+fn blockRec(blk: *const zimt.Block) *BlockRec {
+    return @ptrFromInt(blk.raw.handle);
 }
 
 /// Includes host reads after the submission completes.
@@ -738,90 +761,24 @@ fn recycle(st: *State, cb: c.VkCommandBuffer) void {
     st.free_cbs.appendAssumeCapacity(cb);
 }
 
-/// Runs `record` in its own command buffer and waits for it. Transfers are
-/// synchronous and only run with no submitted work outstanding.
-fn oneShot(st: *State, ctx: anytype, comptime record: fn (@TypeOf(ctx), *State, c.VkCommandBuffer) void) !void {
-    const cb = try acquireCb(st);
-    defer recycle(st, cb);
-    barrier(st, cb);
-    record(ctx, st, cb);
-    barrier(st, cb);
-    try check(st.dev.vkEndCommandBuffer(cb), "vkEndCommandBuffer");
-    const si: c.VkSubmitInfo = .{ .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
-    try check(st.dev.vkQueueSubmit(st.queue, 1, &si, null), "vkQueueSubmit");
-    try check(st.dev.vkQueueWaitIdle(st.queue), "vkQueueWaitIdle");
-    try checkValidation(st);
+fn recording(st: *State) !c.VkCommandBuffer {
+    if (st.recording == null) st.recording = try acquireCb(st);
+    return st.recording;
 }
 
-/// Staging memory of at least `min(len, staging_max)` bytes.
-fn stagingBuffer(st: *State, len: usize) !*BufferRec {
-    const want: u64 = @min(@max(len, 4), staging_max);
-    if (st.staging) |s| {
-        if (s.size >= want) return s;
-        freeRec(st, s);
-        st.staging = null;
-    }
-    // Grow geometrically so repeated sizes settle quickly.
-    const size = @min(staging_max, @max(want, 1 << 20));
-    st.staging = try allocRec(st, size, st.staging_type, false);
-    return st.staging.?;
-}
-
-const Copy = struct {
-    src: c.VkBuffer,
-    dst: c.VkBuffer,
-    region: c.VkBufferCopy,
-
-    fn record(self: Copy, st: *State, cb: c.VkCommandBuffer) void {
-        st.dev.vkCmdCopyBuffer(cb, self.src, self.dst, 1, &self.region);
-    }
-};
-
-pub fn upload(d: *zimt.Device, buf: zimt.Buffer, offset: usize, data: []const u8) !void {
-    if (buf.host) |h| return @memcpy(h[offset..][0..data.len], data);
+pub fn copy(d: *zimt.Device, src: zimt.Span, dst: zimt.Span) !void {
     const st = state(d);
-    var done: usize = 0;
-    while (done < data.len) {
-        const s = try stagingBuffer(st, data.len - done);
-        const n: usize = @intCast(@min(s.size, data.len - done));
-        @memcpy(s.map.?[0..n], data[done..][0..n]);
-        try oneShot(st, Copy{ .src = s.buffer, .dst = bufRec(buf).buffer, .region = .{ .srcOffset = 0, .dstOffset = offset + done, .size = n } }, Copy.record);
-        done += n;
-    }
+    const cb = try recording(st);
+    barrier(st, cb);
+    const region: c.VkBufferCopy = .{ .srcOffset = src.offset, .dstOffset = dst.offset, .size = src.len };
+    st.dev.vkCmdCopyBuffer(cb, blockRec(src.block).buffer, blockRec(dst.block).buffer, 1, &region);
 }
 
-pub fn download(d: *zimt.Device, buf: zimt.Buffer, offset: usize, out: []u8) !void {
-    if (buf.host) |h| return @memcpy(out, h[offset..][0..out.len]);
+pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     const st = state(d);
-    var done: usize = 0;
-    while (done < out.len) {
-        const s = try stagingBuffer(st, out.len - done);
-        const n: usize = @intCast(@min(s.size, out.len - done));
-        try oneShot(st, Copy{ .src = bufRec(buf).buffer, .dst = s.buffer, .region = .{ .srcOffset = offset + done, .dstOffset = 0, .size = n } }, Copy.record);
-        @memcpy(out[done..][0..n], s.map.?[0..n]);
-        done += n;
-    }
-}
-
-pub fn zero(d: *zimt.Device, buf: zimt.Buffer, offset: usize, bytes: usize) !void {
-    if (buf.host) |h| return @memset(h[offset..][0..bytes], 0);
-    // vkCmdFillBuffer needs 4-byte alignment; the ragged ends go through staging.
-    const zeros: [8]u8 = @splat(0);
-    const start = std.mem.alignForward(usize, offset, 4);
-    const end = std.mem.alignBackward(usize, offset + bytes, 4);
-    // No aligned word inside, so fewer than 8 bytes.
-    if (start >= end) return upload(d, buf, offset, zeros[0..bytes]);
-    if (start > offset) try upload(d, buf, offset, zeros[0 .. start - offset]);
-    if (offset + bytes > end) try upload(d, buf, end, zeros[0 .. offset + bytes - end]);
-    const Fill = struct {
-        buffer: c.VkBuffer,
-        offset: u64,
-        size: u64,
-        fn record(self: @This(), st: *State, cb: c.VkCommandBuffer) void {
-            st.dev.vkCmdFillBuffer(cb, self.buffer, self.offset, self.size, 0);
-        }
-    };
-    try oneShot(state(d), Fill{ .buffer = bufRec(buf).buffer, .offset = start, .size = end - start }, Fill.record);
+    const cb = try recording(st);
+    barrier(st, cb);
+    st.dev.vkCmdFillBuffer(cb, blockRec(dst.block).buffer, dst.offset, dst.len, 0);
 }
 
 pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32, args: K.Args) !void {
@@ -832,20 +789,20 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         log.err("kernel '{s}': {any} groups exceed maxComputeWorkGroupCount {any}", .{ K.name, groups, st.limits.maxComputeWorkGroupCount });
         return zimt.Error.DeviceError;
     };
-    if (st.recording == null) st.recording = try acquireCb(st);
-    const cb = st.recording;
+    const cb = try recording(st);
     barrier(st, cb);
     st.dev.vkCmdBindPipeline(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.pipeline);
 
     const n_buf = comptime zimt.bufferCount(K);
     if (n_buf > 0) {
         var infos: [n_buf]c.VkDescriptorBufferInfo = undefined;
-        var writes: [n_buf]c.VkWriteDescriptorSet = undefined;
+        var descs: [n_buf]c.VkWriteDescriptorSet = undefined;
         comptime var i: usize = 0;
         inline for (K.params) |p| switch (p.binding) {
             .buffer => |b| {
-                infos[i] = .{ .buffer = bufRec(@field(args, p.name)).buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-                writes[i] = .{
+                const mem = @field(args, p.name).mem;
+                infos[i] = .{ .buffer = blockRec(mem.block).buffer, .offset = mem.offset, .range = @max(mem.size, 4) };
+                descs[i] = .{
                     .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     .dstBinding = b.vk_binding,
                     .descriptorCount = 1,
@@ -856,7 +813,7 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
             },
             .uniform => {},
         };
-        st.dev.vkCmdPushDescriptorSetKHR(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.layout, 0, n_buf, &writes);
+        st.dev.vkCmdPushDescriptorSetKHR(cb, c.VK_PIPELINE_BIND_POINT_COMPUTE, kr.layout, 0, n_buf, &descs);
     }
     if (K.uniform_size > 0) {
         const words = zimt.packUniforms(K, args);

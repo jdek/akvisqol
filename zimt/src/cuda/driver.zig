@@ -36,9 +36,13 @@ pub const Api = struct {
     cuModuleGetFunction: Pfn("cuModuleGetFunction"),
     cuMemAlloc: Pfn("cuMemAlloc"),
     cuMemFree: Pfn("cuMemFree"),
-    cuMemcpyHtoD: Pfn("cuMemcpyHtoD_v3020"),
-    cuMemcpyDtoH: Pfn("cuMemcpyDtoH_v3020"),
-    cuMemsetD8: Pfn("cuMemsetD8_v3020"),
+    cuMemHostAlloc: Pfn("cuMemHostAlloc"),
+    cuMemHostGetDevicePointer: Pfn("cuMemHostGetDevicePointer"),
+    cuMemFreeHost: Pfn("cuMemFreeHost"),
+    cuMemGetInfo: Pfn("cuMemGetInfo"),
+    cuMemcpyHtoDAsync: Pfn("cuMemcpyHtoDAsync_v3020"),
+    cuMemcpyDtoHAsync: Pfn("cuMemcpyDtoHAsync_v3020"),
+    cuMemsetD8Async: Pfn("cuMemsetD8Async_v3020"),
     cuLaunchKernel: Pfn("cuLaunchKernel_v4000"),
 };
 

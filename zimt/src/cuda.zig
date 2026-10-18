@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! CUDA Driver API backend: PTX kernels, one stream per device on the GPU's
-//! primary context.
+//! primary context so devices in a process overlap.
 const std = @import("std");
 const zimt = @import("root.zig");
 const driver = @import("cuda/driver.zig");
@@ -39,8 +39,8 @@ pub fn open(d: *zimt.Device) !void {
     if (api.cuDevicePrimaryCtxRetain(&st.context, st.device) != c.CUDA_SUCCESS) return zimt.Error.BackendUnavailable;
     errdefer _ = api.cuDevicePrimaryCtxRelease(st.device);
     try call(api.cuCtxSetCurrent(st.context));
-    // Blocking: the synchronous copies run on the legacy default stream.
-    try call(api.cuStreamCreate(&st.stream, 0));
+    // Non-blocking: no implicit sync with the legacy default stream.
+    try call(api.cuStreamCreate(&st.stream, c.CU_STREAM_NON_BLOCKING));
     d.state = st;
     if (api.cuDeviceGetName(&d.name_buf, d.name_buf.len, st.device) == c.CUDA_SUCCESS)
         d.name_len = std.mem.indexOfScalar(u8, &d.name_buf, 0) orelse d.name_buf.len;
@@ -74,31 +74,61 @@ pub fn release(d: *zimt.Device, _: usize, module: usize) void {
     _ = api.cuModuleUnload(@ptrFromInt(module));
 }
 
-pub fn alloc(d: *zimt.Device, bytes: usize) !zimt.Buffer {
-    try bind(d);
-    var p: c.CUdeviceptr = 0;
-    if (api.cuMemAlloc(&p, @max(bytes, 4)) != c.CUDA_SUCCESS) return zimt.Error.OutOfMemory;
-    return .{ .handle = p, .size = bytes };
+/// Not logged: zimt reclaims and retries.
+fn allocCall(r: c.CUresult) !void {
+    if (r == c.CUDA_ERROR_OUT_OF_MEMORY) return zimt.Error.OutOfMemory;
+    try call(r);
 }
 
-pub fn free(d: *zimt.Device, buf: zimt.Buffer) void {
+/// Readback is mapped page-locked memory kernels write through its device
+/// address.
+pub fn blockAlloc(d: *zimt.Device, bytes: usize, kind: zimt.BlockKind) !zimt.RawBlock {
+    try bind(d);
+    if (kind == .device) {
+        var p: c.CUdeviceptr = 0;
+        try allocCall(api.cuMemAlloc(&p, bytes));
+        return .{ .handle = p, .host = null };
+    }
+    var host: ?*anyopaque = null;
+    try allocCall(api.cuMemHostAlloc(&host, bytes, if (kind == .readback) c.CU_MEMHOSTALLOC_DEVICEMAP else 0));
+    const h: [*]u8 = @ptrCast(host.?);
+    if (kind == .staging) return .{ .handle = @intFromPtr(h), .host = h };
+    errdefer _ = api.cuMemFreeHost(host);
+    var dp: c.CUdeviceptr = 0;
+    try call(api.cuMemHostGetDevicePointer(&dp, host, 0));
+    return .{ .handle = dp, .host = h };
+}
+
+pub fn blockFree(d: *zimt.Device, blk: *const zimt.Block) void {
     bind(d) catch {};
-    _ = api.cuMemFree(buf.handle);
+    _ = switch (blk.kind) {
+        .device => api.cuMemFree(blk.raw.handle),
+        .staging, .readback => api.cuMemFreeHost(blk.raw.host.?),
+    };
 }
 
-pub fn upload(d: *zimt.Device, buf: zimt.Buffer, offset: usize, data: []const u8) !void {
-    try bind(d);
-    try call(api.cuMemcpyHtoD(buf.handle + offset, data.ptr, data.len));
+pub fn budget(d: *zimt.Device, kind: zimt.BlockKind) ?zimt.Budget {
+    if (kind != .device) return null;
+    bind(d) catch return null;
+    var free: usize = 0;
+    var total: usize = 0;
+    if (api.cuMemGetInfo(&free, &total) != c.CUDA_SUCCESS) return null;
+    return .{ .used = total - free, .limit = total };
 }
 
-pub fn download(d: *zimt.Device, buf: zimt.Buffer, offset: usize, out: []u8) !void {
+/// zimt copies only between staging and device blocks.
+pub fn copy(d: *zimt.Device, src: zimt.Span, dst: zimt.Span) !void {
     try bind(d);
-    try call(api.cuMemcpyDtoH(out.ptr, buf.handle + offset, out.len));
+    const stream = state(d).stream;
+    try call(if (src.block.kind == .staging)
+        api.cuMemcpyHtoDAsync(dst.block.raw.handle + dst.offset, src.block.raw.host.? + src.offset, src.len, stream)
+    else
+        api.cuMemcpyDtoHAsync(dst.block.raw.host.? + dst.offset, src.block.raw.handle + src.offset, src.len, stream));
 }
 
-pub fn zero(d: *zimt.Device, buf: zimt.Buffer, offset: usize, bytes: usize) !void {
+pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     try bind(d);
-    try call(api.cuMemsetD8(buf.handle + offset, 0, bytes));
+    try call(api.cuMemsetD8Async(dst.block.raw.handle + dst.offset, 0, dst.len, state(d).stream));
 }
 
 /// Slang's CUDA `StructuredBuffer<T>` parameter: `{ T* data; size_t count; }`.
@@ -112,9 +142,9 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
     inline for (K.params, 0..) |p, i| {
         const v = @field(args, p.name);
         switch (p.binding) {
-            .buffer => |b| {
+            .buffer => {
                 // `count` only feeds Slang's optional bounds checks.
-                storage[i] = .{ .data = v.handle, .count = v.size / b.elem_size };
+                storage[i] = .{ .data = v.mem.block.raw.handle + v.mem.offset, .count = v.len };
                 ptrs[i] = @ptrCast(&storage[i]);
             },
             .uniform => {

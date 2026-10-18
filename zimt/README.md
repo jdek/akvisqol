@@ -5,7 +5,9 @@ Metal, CUDA and Vulkan, written in Zig.
 
 Its build runs `slangc -reflection-json` once per kernel and turns the
 result into a Zig binding: a comptime description of the kernel with a
-typed `Args` struct. A dispatch takes its arguments by name, and each
+typed `Args` struct: buffers are `zimt.Buffer(T)` with `T` the reflected
+element (`StructuredBuffer<float2>` is `Buffer([2]f32)`), so a mismatched
+buffer doesn't compile. A dispatch takes its arguments by name, and each
 backend lowers them at comptime:
 - Metal packs the uniforms at their reflected offsets and binds buffers at
   their reflected indices;
@@ -28,7 +30,7 @@ defer dev.release(saxpy);
 const x = try dev.allocInit(f32, xs);
 const y = try dev.allocInit(f32, ys);
 try dev.dispatch1d(saxpy, n, .{ .x = x, .y = y, .a = 2.0, .n = n });
-try dev.download(y, 0, std.mem.sliceAsBytes(ys));
+try dev.download(y, 0, ys);
 ```
 
 The kernel behind it is plain Slang. Entry-point `uniform` parameters
@@ -89,6 +91,8 @@ b.step("shaders", "Regenerate MSL, SPIR-V + reflection").dependOn(zimt.addRegene
 - **Kernels compile to `.metallib`** at build time with IEEE math, for
   macOS 13 by default (`macos_min`, `fast_math`).
 - **CUDA (`.cuda = true`)** compiles PTX with `slangc`, which needs NVRTC.
+  Each `Device` is a non-blocking stream on the GPU's primary context, so
+  several devices in a process share it and overlap their work.
   `libcuda` is loaded at run time (`libcuda.so.1`, then NixOS's
   `/run/opengl-driver/lib`; `nvcuda.dll` on Windows), so without a driver
   `Device.open` returns `BackendUnavailable`. The API comes from NVIDIA's
@@ -120,8 +124,8 @@ Xcode.
 - **Arguments:** `zimt.Buffer` for `StructuredBuffer` /
   `RWStructuredBuffer`, and `u32`, `i32` or `f32` for scalar uniforms.
   Bindgen rejects other parameter types.
-- **Ordering:** dispatches run in submission order, and each sees the
-  previous one's writes.
+- **Ordering:** dispatches and transfers run in the order they are
+  enqueued, and each sees the previous ones' writes.
 - **Fences:** `submit()` returns a fence, a point on a monotonic
   timeline. Each submission is a committed command buffer on Metal, a
   recorded event on CUDA, and a command buffer signalling a timeline
@@ -133,11 +137,43 @@ Xcode.
   - `synchronize()` is `wait(submit())`.
   - Completed submissions are retired oldest first, and a failure is
     reported by the `wait`, `done` or `submit` that retires it.
-- **Transfers:** `upload`, `download` and `zero` wait for all submitted
-  work first.
-- **Memory:** Metal buffers use shared storage, and `Buffer.host` is
-  their CPU mapping. CUDA buffers are device memory, moved by explicit
-  copies. Vulkan buffers are either (see [Vulkan](#vulkan)).
+- **Buffers:** `dev.alloc(T, usage, len)` returns a `Buffer(T)` of `len`
+  elements; `allocInit(T, data)` uploads too. `upload`, `download` and
+  `zero` take element offsets and slices of `T`. Usage is comptime:
+  - `.device`: read and written by kernels;
+  - `.readback`: written by kernels, read by the host. Host-visible
+    memory the device writes directly (mapped page-locked memory on CUDA,
+    host-visible cached memory on Vulkan), so `download` is a memcpy once
+    the device is done. Not for data kernels re-read, nor for atomics.
+- **Memory** is zimt's, the same on every backend. Backends provide
+  blocks; `alloc` suballocates 64 MiB shared blocks per kind with a buddy
+  allocator (power-of-two classes from 256 B, so every offset is
+  256-byte aligned), and a buffer larger than a block gets one of its
+  own. A buffer's `mem` is a `zimt.Allocation` (block, offset, size);
+  backends bind it by offset. `free` defers until the work that may use
+  the buffer has completed. A large buffer's block is a whole number of
+  block sizes, so nearby sizes reuse it. Emptied blocks are kept for reuse up
+  to an eighth of the device's budget per kind (at least
+  `Device.spare_size`, 256 MiB). A `zimt.Arena` (`dev.arena()`) frees its
+  buffers together.
+- **Budgets:** before taking another block, zimt checks the backend's
+  budget for that kind of memory (`VK_EXT_memory_budget`, `cuMemGetInfo`,
+  Metal's `recommendedMaxWorkingSetSize`) and `Device.memory_limit`; over
+  it, it waits for deferred frees and drops spare blocks, then fails with
+  `OutOfMemory` rather than oversubscribe. `dev.budget(kind)` reports it.
+- **Host mapping:** `Buffer.host()` is set where the backend mapped the
+  block: always on Metal (shared storage), for `.readback` elsewhere
+  (on Vulkan unless no host-visible type can back it), and for `.device` on Vulkan where mapped memory is the
+  device's main memory (see [Vulkan](#vulkan)).
+- **Transfers:** `upload` and `zero` are enqueued like dispatches
+  (`upload` copies its data before returning); `download` waits for
+  everything before it. Mapped buffers wait for the device, then
+  `memcpy`. Others go through a 32 MiB staging block (page-locked on
+  CUDA) with enqueued copies; `zero` fills whole words and uploads the
+  ragged ends.
+- **Backend interface:** `open`/`close`, `kernel`/`release`,
+  `blockAlloc`/`blockFree`, `budget`, `copy` and `fill` between block ranges,
+  `dispatch`, `submit`/`finish`. Everything else lives in `root.zig`.
 - **`dispatch1d`** launches at least `n` threads. Up to 32768 groups it is
   a single row; beyond that it folds into rows of 32768 groups (Vulkan
   only guarantees 65535 groups per dimension), so kernels take their
@@ -145,7 +181,7 @@ Xcode.
   bounds-check it.
 - **Access:** each buffer parameter's reflected access (`read`, `write`
   or `read_write`) is in `K.params`. No backend uses it yet: Vulkan puts
-  a full memory barrier before every dispatch. It is there for eliding
+  a full memory barrier before every command. It is there for eliding
   barriers later.
 - **Threads:** a `Device` is not thread-safe, so serialise access to it.
 
@@ -160,16 +196,16 @@ pools.
   implementations last. `ZIMT_VULKAN_DEVICE=<index|name substring>`
   overrides it (e.g. `llvmpipe` for Mesa's lavapipe). `Device.name()` is
   `<device> (<driver>)`.
-- **Memory:** where device-local, host-visible memory is most of the
-  device's memory (APUs, ReBAR, CPU drivers), buffers live there and
-  `Buffer.host` maps them, as on Metal. Otherwise (e.g. a 256 MiB BAR
-  window without ReBAR) buffers are device-local, `Buffer.host` is null,
-  and transfers go through a reused host staging buffer (32 MiB chunks).
-  A full mapped heap also falls back to device-local.
-  `ZIMT_VULKAN_NO_HOST_MAP=1` forces the staged path.
+- **Memory:** each block is one `VkDeviceMemory` with one `VkBuffer`
+  over it; buffers bind through push descriptors at their offset. Where
+  device-local, host-visible memory is most of the device's memory (APUs,
+  ReBAR, CPU drivers), blocks live there and are mapped, as on Metal.
+  Otherwise (e.g. a 256 MiB BAR window without ReBAR) they are
+  device-local and transfers are staged; a full mapped heap also falls
+  back to device-local. `ZIMT_VULKAN_NO_HOST_MAP=1` forces staging.
 - **Validation:** `ZIMT_VULKAN_VALIDATION=1` enables
   `VK_LAYER_KHRONOS_validation` with synchronisation validation. Errors
   are logged and fail the next `submit`, `wait` or transfer; a missing
   layer fails `Device.open` loudly (set `VK_LAYER_PATH`).
-- **Freeing** a buffer or kernel while submitted work is outstanding
-  waits for the queue first.
+- **Releasing a kernel** while submitted work is outstanding waits for
+  the queue first.

@@ -149,7 +149,8 @@ pub const GpuAccel = struct {
     grow: std.Io.Mutex = .init,
     next_lane: std.atomic.Value(usize) = .init(0),
 
-    const Twiddles = struct { n: usize, buf: zimt.Buffer };
+    const Complex = zimt.Buffer([2]f32);
+    const Twiddles = struct { n: usize, buf: Complex };
 
     const Kernels = struct {
         gammatone_frames: zimt.Kernel(kernels.gammatone_frames),
@@ -203,30 +204,29 @@ pub const GpuAccel = struct {
         }
 
         /// Stockham radix 2/4 for log2(n) mod 4, then radix 16; result in `cur`.
-        ///
-        fn fftPasses(self: *Lane, cur: *zimt.Buffer, oth: *zimt.Buffer, tw: zimt.Buffer, log2_n: u32, total: usize, sign: f32) !void {
+        fn fftPasses(self: *Lane, cur: *Complex, oth: *Complex, tw: Complex, log2_n: u32, total: usize, sign: f32) !void {
             const dev = self.device;
             const n: u32 = @as(u32, 1) << @intCast(log2_n);
             const u: u32 = @intCast(total);
             var p: u32 = 1;
             if (log2_n & 1 == 1) {
                 try dev.dispatch1d(self.k.fft_radix2, total / 2, .{ .x = cur.*, .y = oth.*, .tw = tw, .log2_n = log2_n, .p = p, .total = u / 2, .sign = sign });
-                std.mem.swap(zimt.Buffer, cur, oth);
+                std.mem.swap(Complex, cur, oth);
                 p *= 2;
             }
             if (log2_n & 2 == 2) {
                 try dev.dispatch1d(self.k.fft_radix4, total / 4, .{ .x = cur.*, .y = oth.*, .tw = tw, .log2_n = log2_n, .p = p, .total = u / 4, .sign = sign });
-                std.mem.swap(zimt.Buffer, cur, oth);
+                std.mem.swap(Complex, cur, oth);
                 p *= 4;
             }
             while (p < n) : (p *= 16) {
                 try dev.dispatch1d(self.k.fft_radix16, total / 16, .{ .x = cur.*, .y = oth.*, .tw = tw, .log2_n = log2_n, .p = p, .total = u / 16, .sign = sign });
-                std.mem.swap(zimt.Buffer, cur, oth);
+                std.mem.swap(Complex, cur, oth);
             }
         }
 
         /// Computed in f64 (layout in fft_common.slang).
-        fn twiddleTable(self: *Lane, n: usize) !zimt.Buffer {
+        fn twiddleTable(self: *Lane, n: usize) !Complex {
             for (self.twiddles) |t| if (t) |x| if (x.n == n) return x.buf;
             const log2_n = std.math.log2_int(usize, n);
             const lo: usize = @as(usize, 1) << @intCast((log2_n + 1) / 2);
@@ -246,20 +246,20 @@ pub const GpuAccel = struct {
             return buf;
         }
         /// Real part n · Σ_t a[t + i]·b[t]. Caller holds the mutex.
-        fn correlate(self: *Lane, scope: *Scope, input: LagInput, rows: usize, n: usize) !zimt.Buffer {
+        fn correlate(self: *Lane, scope: *zimt.Arena, input: LagInput, rows: usize, n: usize) !Complex {
             const dev = self.device;
             const total = rows * n;
             const log2_n: u32 = std.math.log2_int(usize, n);
             const u: u32 = @intCast(total);
-            const d_signals = try scope.init(f32, input.signals);
-            const d_layout = try scope.init(u32, input.layout);
-            var cur = try scope.alloc(total * 8);
-            var oth = try scope.alloc(total * 8);
+            const d_signals = try scope.allocInit(f32, input.signals);
+            const d_layout = try scope.allocInit(u32, input.layout);
+            var cur = try scope.alloc([2]f32, .device, total);
+            var oth = try scope.alloc([2]f32, .device, total);
             try dev.dispatch1d(self.k.lag_pack, total, .{ .signals = d_signals, .jobs = d_layout, .z = cur, .log2_n = log2_n, .total = u });
             const tw = try self.twiddleTable(n);
             try self.fftPasses(&cur, &oth, tw, log2_n, total, -1.0);
             try dev.dispatch1d(self.k.xcorr_spectrum, total, .{ .z = cur, .out = oth, .log2_n = log2_n, .total = u });
-            std.mem.swap(zimt.Buffer, &cur, &oth);
+            std.mem.swap(Complex, &cur, &oth);
             try self.fftPasses(&cur, &oth, tw, log2_n, total, 1.0);
             return cur;
         }
@@ -318,31 +318,6 @@ pub const GpuAccel = struct {
         .spectrograms = spectrogramsImpl,
         .patchSimilarities = patchSimilaritiesImpl,
         .bestLags = bestLagsImpl,
-    };
-
-    /// Device buffers released together at the end of a call.
-    const Scope = struct {
-        dev: *zimt.Device,
-        bufs: [16]zimt.Buffer = undefined,
-        n: usize = 0,
-
-        fn init(self: *Scope, comptime T: type, data: []const T) !zimt.Buffer {
-            const b = try self.dev.allocInit(T, data);
-            self.bufs[self.n] = b;
-            self.n += 1;
-            return b;
-        }
-
-        fn alloc(self: *Scope, bytes: usize) !zimt.Buffer {
-            const b = try self.dev.alloc(@max(bytes, 4));
-            self.bufs[self.n] = b;
-            self.n += 1;
-            return b;
-        }
-
-        fn deinit(self: *Scope) void {
-            for (self.bufs[0..self.n]) |b| self.dev.free(b);
-        }
     };
 
     fn spectrogramsImpl(ctx: *anyopaque, params: accel.SpecParams, jobs: []const accel.SpecJob) anyerror!void {
@@ -412,14 +387,14 @@ pub const GpuAccel = struct {
             const lane = self.acquire();
             defer lane.release();
             const dev = lane.device;
-            var scope: Scope = .{ .dev = dev };
+            var scope = dev.arena();
             defer scope.deinit();
-            const d_signals = try scope.init(f32, signals);
-            const d_frames = try scope.init(u32, frames);
-            const d_coeffs = try scope.init(f32, coeffs);
-            const d_coeffs2 = try scope.init(f32, coeffs2);
-            const d_hann = try scope.init(f32, hann);
-            const d_out = try scope.alloc(total_out * 4);
+            const d_signals = try scope.allocInit(f32, signals);
+            const d_frames = try scope.allocInit(u32, frames);
+            const d_coeffs = try scope.allocInit(f32, coeffs);
+            const d_coeffs2 = try scope.allocInit(f32, coeffs2);
+            const d_hann = try scope.allocInit(f32, hann);
+            const d_out = try scope.alloc(f32, .readback, total_out);
             try dev.dispatch1d(lane.k.gammatone_frames, total_frames * nb, .{
                 .signals = d_signals,
                 .frames = d_frames,
@@ -431,7 +406,7 @@ pub const GpuAccel = struct {
                 .num_bands = @intCast(nb),
                 .window_size = @intCast(params.window_size),
             });
-            try dev.download(d_out, 0, std.mem.sliceAsBytes(out));
+            try dev.download(d_out, 0, out);
         }
 
         var o_off: usize = 0;
@@ -509,16 +484,16 @@ pub const GpuAccel = struct {
             const lane = self.acquire();
             defer lane.release();
             const dev = lane.device;
-            var scope: Scope = .{ .dev = dev };
+            var scope = dev.arena();
             defer scope.deinit();
-            const d_ref = try scope.init(f32, ref_f);
-            const d_deg = try scope.init(f32, deg_f);
-            const d_rows = try scope.init(u32, rows);
-            const d_stat_rows = try scope.init(u32, stat_rows);
+            const d_ref = try scope.allocInit(f32, ref_f);
+            const d_deg = try scope.allocInit(f32, deg_f);
+            const d_rows = try scope.allocInit(u32, rows);
+            const d_stat_rows = try scope.allocInit(u32, stat_rows);
             const cells = nb * ps;
-            const d_mu = try scope.alloc(num_rows * cells * 4);
-            const d_srs = try scope.alloc(num_rows * cells * 4);
-            const d_out = try scope.alloc(num_tasks * 4);
+            const d_mu = try scope.alloc(f32, .device, num_rows * cells);
+            const d_srs = try scope.alloc(f32, .device, num_rows * cells);
+            const d_out = try scope.alloc(f32, .readback, num_tasks);
             const u = struct {
                 fn c(x: usize) u32 {
                     return @intCast(x);
@@ -545,7 +520,7 @@ pub const GpuAccel = struct {
                 .num_bands = u(nb),
                 .patch_size = u(ps),
             });
-            try dev.download(d_out, 0, std.mem.sliceAsBytes(out));
+            try dev.download(d_out, 0, out);
         }
 
         var task: usize = 0;
@@ -618,15 +593,15 @@ pub const GpuAccel = struct {
             const lane = self.acquire();
             defer lane.release();
             const dev = lane.device;
-            var scope: Scope = .{ .dev = dev };
+            var scope = dev.arena();
             defer scope.deinit();
             const corr = try lane.correlate(&scope, input, rows, n);
-            const d_params = try scope.init(u32, params);
-            const d_top = try scope.alloc(rows * 4);
-            const d_count = try scope.alloc(rows * 4);
-            const d_cands = try scope.alloc(rows * cap * 4);
-            try dev.zero(d_top, 0, rows * 4);
-            try dev.zero(d_count, 0, rows * 4);
+            const d_params = try scope.allocInit(u32, params);
+            const d_top = try scope.alloc(u32, .device, rows);
+            const d_count = try scope.alloc(u32, .device, rows);
+            const d_cands = try scope.alloc(i32, .readback, rows * cap);
+            try dev.zero(d_top, 0, rows);
+            try dev.zero(d_count, 0, rows);
             const log2_n: u32 = std.math.log2_int(usize, n);
             const chunks = rows * (n / LAG_CHUNK);
             const uc: u32 = @intCast(chunks);
@@ -641,8 +616,8 @@ pub const GpuAccel = struct {
                 .total_chunks = uc,
                 .cap = cap,
             });
-            try dev.download(d_count, 0, std.mem.sliceAsBytes(counts));
-            try dev.download(d_cands, 0, std.mem.sliceAsBytes(cands));
+            try dev.download(d_count, 0, counts);
+            try dev.download(d_cands, 0, cands);
         }
         var lags: [cap]i64 = undefined;
         for (idx, 0..) |ji, c| {
@@ -707,10 +682,10 @@ pub const GpuAccel = struct {
         errdefer a.free(out);
         const lane = self.acquire();
         defer lane.release();
-        var scope: Scope = .{ .dev = lane.device };
+        var scope = lane.device.arena();
         defer scope.deinit();
         const corr = try lane.correlate(&scope, input, idx.len, n);
-        try lane.device.download(corr, 0, std.mem.sliceAsBytes(out));
+        try lane.device.download(corr, 0, std.mem.bytesAsSlice([2]f32, std.mem.sliceAsBytes(out)));
         return out;
     }
 };

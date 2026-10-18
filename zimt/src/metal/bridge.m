@@ -128,6 +128,12 @@ void *zimt_metal_pipeline_new(ZimtMetal *m, void *lib, const char *entry, uint32
     }
 }
 
+void zimt_metal_memory(ZimtMetal *m, uint64_t *used, uint64_t *limit) {
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)m->device;
+    *used = dev.currentAllocatedSize;
+    *limit = dev.recommendedMaxWorkingSetSize;
+}
+
 void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents) {
     @autoreleasepool {
         id<MTLDevice> dev = (__bridge id<MTLDevice>)m->device;
@@ -139,7 +145,7 @@ void *zimt_metal_buffer_new(ZimtMetal *m, size_t bytes, void **contents) {
 }
 
 int zimt_metal_dispatch(ZimtMetal *m, void *pipeline,
-                        void *const *buffers, const uint32_t *indices, uint32_t nbuffers,
+                        void *const *buffers, const size_t *offsets, const uint32_t *indices, uint32_t nbuffers,
                         const void *bytes, uint32_t nbytes, uint32_t bytes_index,
                         const uint32_t groups[3], const uint32_t threads[3]) {
     @autoreleasepool {
@@ -160,7 +166,7 @@ int zimt_metal_dispatch(ZimtMetal *m, void *pipeline,
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)pipeline];
         if (nbytes > 0) [enc setBytes:bytes length:nbytes atIndex:bytes_index];
         for (uint32_t i = 0; i < nbuffers; i++) {
-            [enc setBuffer:(__bridge id<MTLBuffer>)buffers[i] offset:0 atIndex:indices[i]];
+            [enc setBuffer:(__bridge id<MTLBuffer>)buffers[i] offset:offsets[i] atIndex:indices[i]];
         }
         [enc dispatchThreadgroups:MTLSizeMake(groups[0], groups[1], groups[2])
             threadsPerThreadgroup:MTLSizeMake(threads[0], threads[1], threads[2])];

@@ -11,11 +11,13 @@ extern fn zimt_metal_close(m: *Bridge) void;
 extern fn zimt_metal_library_new(m: *Bridge, bytes: [*]const u8, len: usize, err: [*]u8, err_len: usize) ?*anyopaque;
 extern fn zimt_metal_release(obj: *anyopaque) void;
 extern fn zimt_metal_pipeline_new(m: *Bridge, lib: *anyopaque, entry: [*:0]const u8, max_threads: *u32, err: [*]u8, err_len: usize) ?*anyopaque;
+extern fn zimt_metal_memory(m: *Bridge, used: *u64, limit: *u64) void;
 extern fn zimt_metal_buffer_new(m: *Bridge, bytes: usize, contents: *?[*]u8) ?*anyopaque;
 extern fn zimt_metal_dispatch(
     m: *Bridge,
     pipeline: *anyopaque,
     buffers: [*]const ?*anyopaque,
+    offsets: [*]const usize,
     indices: [*]const u32,
     nbuffers: u32,
     bytes: ?*const anyopaque,
@@ -73,33 +75,37 @@ pub fn release(_: *zimt.Device, handle: usize, module: usize) void {
     zimt_metal_release(@ptrFromInt(module));
 }
 
-pub fn alloc(d: *zimt.Device, bytes: usize) !zimt.Buffer {
+/// Shared storage, so zimt never needs `copy` or `fill`.
+pub fn blockAlloc(d: *zimt.Device, bytes: usize, _: zimt.BlockKind) !zimt.RawBlock {
     var host: ?[*]u8 = null;
     const b = zimt_metal_buffer_new(bridge(d), bytes, &host) orelse return zimt.Error.OutOfMemory;
-    return .{ .handle = @intFromPtr(b), .size = bytes, .host = host };
+    return .{ .handle = @intFromPtr(b), .host = host };
 }
 
-pub fn free(_: *zimt.Device, buf: zimt.Buffer) void {
-    zimt_metal_release(@ptrFromInt(buf.handle));
+pub fn blockFree(_: *zimt.Device, blk: *const zimt.Block) void {
+    zimt_metal_release(@ptrFromInt(blk.raw.handle));
 }
 
-// Shared storage: transfers are memcpys.
-pub fn upload(_: *zimt.Device, buf: zimt.Buffer, offset: usize, data: []const u8) !void {
-    @memcpy(buf.host.?[offset..][0..data.len], data);
+pub fn budget(d: *zimt.Device, _: zimt.BlockKind) ?zimt.Budget {
+    var used: u64 = 0;
+    var limit: u64 = 0;
+    zimt_metal_memory(bridge(d), &used, &limit);
+    return .{ .used = used, .limit = limit };
 }
 
-pub fn download(_: *zimt.Device, buf: zimt.Buffer, offset: usize, out: []u8) !void {
-    @memcpy(out, buf.host.?[offset..][0..out.len]);
+pub fn copy(_: *zimt.Device, _: zimt.Span, _: zimt.Span) !void {
+    unreachable;
 }
 
-pub fn zero(_: *zimt.Device, buf: zimt.Buffer, offset: usize, bytes: usize) !void {
-    @memset(buf.host.?[offset..][0..bytes], 0);
+pub fn fill(_: *zimt.Device, _: zimt.Span) !void {
+    unreachable;
 }
 
 /// Uniforms bind as one constant block at `K.uniform_index`.
 pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32, args: K.Args) !void {
     const n_buf = comptime zimt.bufferCount(K);
     var bufs: [@max(n_buf, 1)]?*anyopaque = undefined;
+    var offsets: [@max(n_buf, 1)]usize = undefined;
     const indices = comptime blk: {
         var idx: [@max(n_buf, 1)]u32 = @splat(0);
         var i: usize = 0;
@@ -115,7 +121,9 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
     comptime var i: usize = 0;
     inline for (K.params) |p| switch (p.binding) {
         .buffer => {
-            bufs[i] = @ptrFromInt(@field(args, p.name).handle);
+            const mem = @field(args, p.name).mem;
+            bufs[i] = @ptrFromInt(mem.block.raw.handle);
+            offsets[i] = mem.offset;
             i += 1;
         },
         .uniform => {},
@@ -125,6 +133,7 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         bridge(d),
         @ptrFromInt(handle),
         &bufs,
+        &offsets,
         &indices,
         @intCast(n_buf),
         if (K.uniform_size > 0) @ptrCast(&words) else null,

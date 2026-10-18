@@ -75,16 +75,18 @@ fn scalar(name: []const u8) Unsupported!struct { zig: []const u8, slang: []const
     return error.UnsupportedParameter;
 }
 
-fn element(t: Value, buf: []u8) (Unsupported || error{NoSpaceLeft})!struct { slang: []const u8, size: u32 } {
+fn element(t: Value, buf: []u8) (Unsupported || error{NoSpaceLeft})!struct { slang: []const u8, zig: []const u8, size: u32 } {
     const kind = try str(try get(t, "kind"));
     if (std.mem.eql(u8, kind, "scalar")) {
         const s = try scalar(try str(try get(t, "scalarType")));
-        return .{ .slang = s.slang, .size = s.size };
+        return .{ .slang = s.slang, .zig = s.zig, .size = s.size };
     }
     if (std.mem.eql(u8, kind, "vector")) {
         const n = try int(try get(t, "elementCount"));
         const s = try scalar(try str(try get(try get(t, "elementType"), "scalarType")));
-        return .{ .slang = try std.fmt.bufPrint(buf, "{s}{d}", .{ s.slang, n }), .size = s.size * n };
+        const slang = try std.fmt.bufPrint(buf, "{s}{d}", .{ s.slang, n });
+        const zig = try std.fmt.bufPrint(buf[slang.len..], "[{d}]{s}", .{ n, s.zig });
+        return .{ .slang = slang, .zig = zig, .size = s.size * n };
     }
     return error.UnsupportedParameter;
 }
@@ -187,7 +189,7 @@ fn emit(w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, entry: []const u8
             const el = try element(try get(t, "resultType"), &buf);
             const rw = optStr(t, "access") != null;
             try w.print("        /// {s}StructuredBuffer<{s}>\n", .{ if (rw) "RW" else "", el.slang });
-            try w.print("        {f}: zimt.Buffer,\n", .{std.zig.fmtId(pname)});
+            try w.print("        {f}: zimt.Buffer({s}),\n", .{ std.zig.fmtId(pname), el.zig });
         } else if (std.mem.eql(u8, kind, "scalar")) {
             const s = try scalar(try str(try get(t, "scalarType")));
             const b = try get(p, "binding");
@@ -204,14 +206,12 @@ fn emit(w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, entry: []const u8
         const t = try get(p, "type");
         const b = try get(p, "binding");
         if (std.mem.eql(u8, try str(try get(t, "kind")), "resource")) {
-            var buf: [32]u8 = undefined;
-            const el = try element(try get(t, "resultType"), &buf);
             const access = if (optStr(t, "access")) |a|
                 (if (std.mem.eql(u8, a, "readWrite")) "read_write" else if (std.mem.eql(u8, a, "write")) "write" else if (std.mem.eql(u8, a, "read")) "read" else return error.UnsupportedParameter)
             else
                 "read";
-            try w.print("        .{{ .name = \"{s}\", .binding = .{{ .buffer = .{{ .metal_index = {d}, .vk_binding = {d}, .access = .{s}, .elem_size = {d} }} }} }},\n", .{
-                pname, try int(try get(b, "index")), try int(try get(try get(vp, "binding"), "index")), access, el.size,
+            try w.print("        .{{ .name = \"{s}\", .binding = .{{ .buffer = .{{ .metal_index = {d}, .vk_binding = {d}, .access = .{s} }} }} }},\n", .{
+                pname, try int(try get(b, "index")), try int(try get(try get(vp, "binding"), "index")), access,
             });
         } else {
             try w.print("        .{{ .name = \"{s}\", .binding = .{{ .uniform = .{{ .offset = {d}, .size = {d} }} }} }},\n", .{ pname, try int(try get(b, "offset")), try int(try get(b, "size")) });
