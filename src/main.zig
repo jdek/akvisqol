@@ -23,7 +23,7 @@ const usage =
     \\  --disable_global_alignment
     \\  --disable_realignment
     \\  --verbose                         print per-band and per-patch detail
-    \\  --backend cpu|metal|cuda          compute backend (default cpu)
+    \\  --backend cpu|metal|cuda|vulkan   compute backend (default cpu)
     \\  --threads N                       batch worker threads (default: all cores)
     \\
 ;

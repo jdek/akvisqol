@@ -34,6 +34,7 @@ enum {
     VISQOL_BACKEND_CPU = 0,
     VISQOL_BACKEND_METAL = 1,
     VISQOL_BACKEND_CUDA = 2,
+    VISQOL_BACKEND_VULKAN = 3,
 };
 
 typedef struct {

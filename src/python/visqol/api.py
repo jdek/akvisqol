@@ -175,7 +175,7 @@ class VisqolApi:
         """Initialise with the given configuration.
 
         Speech mode uses the lattice model unless `use_lattice_model` is False.
-        `backend`: "cpu", "metal" or "cuda" (default `$VISQOL_BACKEND` or "cpu").
+        `backend`: "cpu", "metal", "cuda" or "vulkan" (default `$VISQOL_BACKEND` or "cpu").
         """
         mode_lower = mode.lower()
         if mode_lower not in _VALID_MODES:

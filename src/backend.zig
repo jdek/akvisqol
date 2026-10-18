@@ -9,7 +9,7 @@ const visqol = @import("visqol.zig");
 const svr = @import("svr.zig");
 const lattice = @import("lattice.zig");
 
-pub const Kind = enum(u32) { cpu = 0, metal = 1, cuda = 2 };
+pub const Kind = enum(u32) { cpu = 0, metal = 1, cuda = 2, vulkan = 3 };
 
 pub const Pair = visqol.Pair;
 
@@ -22,6 +22,9 @@ pub fn availableMask() u32 {
     }
     if (build_options.cuda) {
         if (@import("gpu/engine.zig").available(.cuda)) m |= 1 << @backingInt(Kind.cuda);
+    }
+    if (build_options.vulkan) {
+        if (@import("gpu/engine.zig").available(.vulkan)) m |= 1 << @backingInt(Kind.vulkan);
     }
     return m;
 }
@@ -48,12 +51,14 @@ pub const Engine = union(Kind) {
     cpu: CpuEngine,
     metal: GpuEngine,
     cuda: GpuEngine,
+    vulkan: GpuEngine,
 
     pub fn init(allocator: std.mem.Allocator, kind: Kind, options: visqol.Options, model_text: []const u8) !Engine {
         return switch (kind) {
             .cpu => .{ .cpu = try CpuEngine.init(allocator, options, model_text) },
             .metal => .{ .metal = try GpuEngine.init(allocator, .metal, options, model_text) },
             .cuda => .{ .cuda = try GpuEngine.init(allocator, .cuda, options, model_text) },
+            .vulkan => .{ .vulkan = try GpuEngine.init(allocator, .vulkan, options, model_text) },
         };
     }
 
@@ -77,7 +82,7 @@ pub const Engine = union(Kind) {
     }
 };
 
-const GpuEngine = if (build_options.metal or build_options.cuda)
+const GpuEngine = if (build_options.metal or build_options.cuda or build_options.vulkan)
     @import("gpu/engine.zig").Engine
 else
     struct {

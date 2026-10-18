@@ -16,7 +16,7 @@ import numpy as np
 MODE_AUDIO = 0
 MODE_SPEECH = 1
 
-BACKENDS = {"cpu": 0, "metal": 1, "cuda": 2}
+BACKENDS = {"cpu": 0, "metal": 1, "cuda": 2, "vulkan": 3}
 
 OK = 0
 E_INVALID_ARGUMENT = -1

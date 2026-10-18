@@ -18,9 +18,10 @@ pub fn build(b: *std.Build) void {
 
     const metal_opt = b.option(bool, "metal", "Build the Metal GPU backend (needs the Xcode Metal Toolchain; default: on when macOS and the toolchain works)");
     const enable_cuda = b.option(bool, "cuda", "Build the CUDA GPU backend (needs slangc with NVRTC at build time, libcuda at run time)") orelse false;
+    const enable_vulkan = b.option(bool, "vulkan", "Build the Vulkan GPU backend (fetches the Vulkan headers at build time; loads the Vulkan loader at run time)") orelse false;
     const enable_metal = zimt.resolveMetal(b, metal_opt, os);
 
-    const zimt_dep = b.dependency("zimt", .{ .target = target, .metal = enable_metal, .cuda = enable_cuda });
+    const zimt_dep = b.dependency("zimt", .{ .target = target, .metal = enable_metal, .cuda = enable_cuda, .vulkan = enable_vulkan });
     const zimt_mod = zimt_dep.module("zimt");
     const kernels_mod = zimt.addKernels(b, .{
         .zimt = zimt_dep,
@@ -29,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .entries = &kernels,
         .metal = enable_metal,
         .cuda = enable_cuda,
+        .vulkan = enable_vulkan,
     });
     b.step("shaders", "Regenerate src/gpu/generated/ (MSL, SPIR-V + reflection) from the Slang sources (needs slangc, spirv-val)").dependOn(zimt.addRegenerate(b, .{
         .zimt = zimt_dep,
@@ -41,6 +43,7 @@ pub fn build(b: *std.Build) void {
     options.addOption([:0]const u8, "version", version);
     options.addOption(bool, "metal", enable_metal);
     options.addOption(bool, "cuda", enable_cuda);
+    options.addOption(bool, "vulkan", enable_vulkan);
     options.addOption(u32, "gammatone_lanes", b.option(u32, "gammatone-lanes", "Frames filtered per SIMD vector in the CPU gammatone (default: per target)") orelse 0);
 
     // Default models embedded so the library needs no data files.
@@ -128,6 +131,8 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = test_mod });
     const run_tests = b.addRunArtifact(tests);
     run_tests.setCwd(b.path("."));
+    // Results depend on the GPUs present and ZIMT_* variables.
+    run_tests.has_side_effects = enable_metal or enable_cuda or enable_vulkan;
     b.step("test", "Run unit + conformance tests (conformance needs tests/fetch_data.sh)").dependOn(&run_tests.step);
 }
 

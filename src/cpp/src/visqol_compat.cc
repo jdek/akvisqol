@@ -35,12 +35,13 @@ absl::Status FromCode(int rc, absl::string_view context = "") {
   }
 }
 
-// VISQOL_BACKEND=cpu|metal|cuda; unknown values select CPU.
+// VISQOL_BACKEND=cpu|metal|cuda|vulkan; unknown values select CPU.
 uint32_t BackendFromEnv() {
   const char* b = std::getenv("VISQOL_BACKEND");
   if (b == nullptr) return VISQOL_BACKEND_CPU;
   if (std::strcmp(b, "metal") == 0) return VISQOL_BACKEND_METAL;
   if (std::strcmp(b, "cuda") == 0) return VISQOL_BACKEND_CUDA;
+  if (std::strcmp(b, "vulkan") == 0) return VISQOL_BACKEND_VULKAN;
   return VISQOL_BACKEND_CPU;
 }
 

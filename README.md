@@ -1,7 +1,7 @@
 # akvisqol
 
 Google's [ViSQOL](https://github.com/google/visqol) v3.3.3 in Zig: a fast,
-conformant reimplementation with optional Metal and CUDA backends, and
+conformant reimplementation with optional Metal, CUDA and Vulkan backends, and
 drop-in replacements for the C++ and Python APIs. The project and its
 packages are `akvisqol`; the drop-in surfaces keep upstream's names
 (`import visqol`, the `visqol` CLI, `libvisqol`).
@@ -27,7 +27,7 @@ zig build -Doptimize=ReleaseFast
 
 Flags match upstream's (`--use_speech_mode`, `--use_lattice_model`,
 `--search_window_radius`, `--disable_global_alignment`, …), plus
-`--backend cpu|metal|cuda` and `--threads N`. Batches use all cores by
+`--backend cpu|metal|cuda|vulkan` and `--threads N`. Batches use all cores by
 default.
 
 ### C and Zig
@@ -126,7 +126,9 @@ Google's C++ on the same pairs and against Google's conformance values:
 | Google C++ / `visqol_lib_py` | 0 | 0 | 0 | 1.1e-14 | 0 | 3.6e-05 |
 | visqol-python 3.8.0 | 1.2e-04 | 1.1e-03 | 2.4e-03 | 1.2e-04 | 1.1e-03 | 2.4e-03 |
 
-- **Metal** kernels are f32 (see [Backends](#backends)).
+- **Metal** kernels are f32 (see [Backends](#backends)). CUDA and Vulkan
+  match the CPU bit for bit in f64, and within ~1e-7 (balanced) or ~5e-7
+  (fast) in f32.
 - **Lattice** gaps come from the summation order of the model's 4,096-term
   dot products. The built-in interpreter uses TFLite's builtin-kernel
   order (sequential f32 FMA); Google's build uses XNNPACK. Both are well
@@ -134,7 +136,8 @@ Google's C++ on the same pairs and against Google's conformance values:
   kernels the interpreter is identical on 10 of 11 inputs and within
   2.4e-6 on the last.
 
-`zig build test` runs unit and conformance tests on CPU and Metal;
+`zig build test` runs unit and conformance tests, and the GPU kernel tests
+on every backend built in;
 `src/python/tests` and `src/cpp/tests` cover the wrappers (conformance,
 batching, errors, GPU parity at 1e-5).
 
@@ -167,6 +170,7 @@ glibc 2.17 on Linux). macOS wheels with Metal need a macOS host.
 | `cpu` | always | f64 reference |
 | `metal` | `-Dmetal` | needs the Xcode Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) |
 | `cuda` | `-Dcuda` | needs `slangc` with NVRTC to build (`nix develop .#cuda`) and fetches the CUDA headers; loads `libcuda` at run time |
+| `vulkan` | `-Dvulkan` | Vulkan 1.2 with `VK_KHR_push_descriptor`; fetches the Vulkan headers to build; loads the Vulkan loader at run time; not on musl |
 
 The model talks to an `Accelerator` interface ([`src/accel.zig`](src/accel.zig))
 covering the three hot spots: gammatone spectrograms, the DP
@@ -188,7 +192,7 @@ tests/fetch_data.sh               # upstream conformance audio → tests/data/
 zig build test                    # unit + conformance (-Dmetal=false for CPU only)
 zig build python -Doptimize=ReleaseFast
 PYTHONPATH=src/python python -m pytest src/python/tests   # the shell's numpy, protobuf, pytest
-zig build shaders                 # regenerate src/gpu/generated/ (needs slangc)
+zig build shaders                 # regenerate src/gpu/generated/ (needs slangc, spirv-val)
 zig build pb2                     # regenerate src/python/visqol/pb2
 ```
 
@@ -202,12 +206,21 @@ CUDA kernels compile to PTX with `slangc`, which loads NVRTC. The driver
 library is `dlopen`ed rather than linked, so a CUDA build runs on machines
 without an NVIDIA driver and reports `cuda` unavailable there.
 
+Vulkan runs the checked-in SPIR-V, so it needs no Slang either; its API
+bindings come from the Khronos headers through translate-c, fetched as a
+lazy package dependency only for `-Dvulkan` builds. The loader is
+`dlopen`ed too. `ZIMT_VULKAN_DEVICE=<index|name>` picks a device (e.g.
+`llvmpipe` for Mesa's lavapipe), and `ZIMT_VULKAN_VALIDATION=1` runs under
+the Khronos validation layer with synchronisation checks, failing on any
+error; see [zimt](zimt/README.md#vulkan).
+
 ## Limitations
 
 - No resampling, as upstream: both signals must share a sample rate.
   Audio mode expects 48 kHz (`allow_unsupported_sample_rates` overrides),
   and speech mode warns above 16 kHz.
-- CUDA has been run only on Linux (RTX 3080); the Windows path is untested.
+- CUDA and Vulkan have been run only on Linux (RTX 3080, and lavapipe for
+  Vulkan); their Windows paths and AMD/Intel Vulkan drivers are untested.
 - The TFLite interpreter covers the 18 float ops in
   [`src/tflite.zig`](src/tflite.zig), enough for upstream's lattice model.
 

@@ -41,6 +41,32 @@ jobs:
       - run: tests/fetch_data.sh
       - run: zig build test -Doptimize=ReleaseSafe -Dmetal=false
 
+  # The GPU backend CI can run: Vulkan on lavapipe, under validation.
+  vulkan:
+    name: vulkan (lavapipe)
+    runs-on: ubuntu-latest
+    env:
+      ZIMT_VULKAN_DEVICE: llvmpipe
+      ZIMT_VULKAN_VALIDATION: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: tests/data
+          key: testdata-${{ hashFiles('tests/fetch_data.sh') }}
+      - run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers vulkan-validationlayers
+      - run: tests/fetch_data.sh
+      - run: zig build test -Doptimize=ReleaseSafe -Dvulkan=true
+        working-directory: zimt
+      - run: zig build test -Doptimize=ReleaseSafe -Dmetal=false -Dvulkan=true
+      # Device-local memory with staged copies, as on discrete GPUs without ReBAR.
+      - run: zig build test -Doptimize=ReleaseSafe -Dmetal=false -Dvulkan=true
+        env:
+          ZIMT_VULKAN_NO_HOST_MAP: "1"
+
   cross:
     name: cross (${{ matrix.target }})
     strategy:

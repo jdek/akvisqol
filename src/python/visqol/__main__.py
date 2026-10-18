@@ -33,7 +33,7 @@ def main() -> None:
                         help="Path to lattice .tflite model (speech mode, optional override)")
     parser.add_argument("--no_alignment", action="store_true", help="Disable global alignment")
     parser.add_argument("--no_realignment", action="store_true", help="Disable fine realignment")
-    parser.add_argument("--backend", default=None, help="Compute backend: cpu, metal, cuda (extension)")
+    parser.add_argument("--backend", default=None, help="Compute backend: cpu, metal, cuda, vulkan (extension)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 

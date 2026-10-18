@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The CPU model with its `Accelerator` hot spots as f32 Slang kernels on
-//! zimt (Metal or CUDA). Cheap delicate stages stay f64 on the CPU; MOS
+//! zimt (Metal, CUDA or Vulkan). Cheap delicate stages stay f64 on the CPU; MOS
 //! drift vs the CPU path is <1e-6. Alignment lags are rescored in f64, so exact.
 const std = @import("std");
 const zimt = @import("zimt");
@@ -23,6 +23,7 @@ fn toGpu(kind: backend.Kind) ?zimt.Backend {
         .cpu => null,
         .metal => .metal,
         .cuda => .cuda,
+        .vulkan => .vulkan,
     };
 }
 
@@ -641,85 +642,101 @@ pub const GpuAccel = struct {
     }
 };
 
-test "GPU lag search: f32 correlation within tolerance, lags exact" {
-    const allocator = std.testing.allocator;
-    const kind: backend.Kind = if (zimt.compiledIn(.metal)) .metal else .cuda;
-    if (!available(kind)) return error.SkipZigTest;
-    const ga = try GpuAccel.create(allocator, toGpu(kind).?);
-    defer ga.destroy();
-    var prng = std.Random.DefaultPrng.init(3);
-    const r = prng.random();
-    // n = 2^11 .. 2^18: every log2(n) mod 4 pass schedule.
-    for ([_]usize{ 1000, 3000, 9000, 20000, 70000, 130000 }, [_]i64{ 5, -17, 300, -1234, 999, -4000 }) |len, shift| {
-        const s1 = try allocator.alloc(f64, len);
-        defer allocator.free(s1);
-        const s2 = try allocator.alloc(f64, len + 50);
-        defer allocator.free(s2);
-        var acc: f64 = 0;
-        for (s1) |*x| {
-            acc = 0.9 * acc + r.float(f64);
-            x.* = acc;
-        }
-        for (s2, 0..) |*x, i| {
-            const src = @as(i64, @intCast(i)) - shift;
-            x.* = if (src >= 0 and src < len) s1[@intCast(src)] + 0.1 * r.float(f64) else r.float(f64);
-        }
-        var out: i64 = undefined;
-        const jobs = [_]accel.LagJob{.{ .a = s1, .b = s2, .out = &out }};
-        const n = GpuAccel.lagFftSize(jobs[0]);
-
-        var res = try ga.correlateGroup(&jobs, &.{0}, n);
-        defer res.deinit(ga);
-        const flat = res.values();
-        var plan = try xcorr.Plan.init(allocator, n);
-        defer plan.deinit();
-        const exact = xcorr.xcorrCircular(&plan, s1, s2);
-        var energy: f64 = 0;
-        for (s1) |x| energy += x * x;
-        for (s2) |x| energy += x * x;
-        var max_err: f64 = 0;
-        for (exact, 0..) |e, i| max_err = @max(max_err, @abs(flat[2 * i] / @as(f64, @floatFromInt(n)) - e) / energy);
-        try std.testing.expect(max_err < GpuAccel.lagTolerance(n) / 10.0);
-
-        try ga.accelerator().bestLags(&jobs);
-        try std.testing.expectEqual(try xcorr.bestLag(allocator, s1, s2), out);
+/// Every compiled-in backend with a device; skips if there are none.
+fn eachGpu(comptime body: fn (*GpuAccel) anyerror!void) !void {
+    var ran = false;
+    for (std.enums.values(zimt.Backend)) |b| {
+        const ga = GpuAccel.create(std.testing.allocator, b) catch |e| switch (e) {
+            error.BackendUnavailable => continue,
+            else => return e,
+        };
+        defer ga.destroy();
+        std.debug.print("GPU test: {t} on {s}\n", .{ b, ga.device.name() });
+        try body(ga);
+        ran = true;
     }
+    if (!ran) return error.SkipZigTest;
+}
+
+test "GPU lag search: f32 correlation within tolerance, lags exact" {
+    try eachGpu(struct {
+        fn run(ga: *GpuAccel) !void {
+            const allocator = std.testing.allocator;
+            var prng = std.Random.DefaultPrng.init(3);
+            const r = prng.random();
+            // n = 2^11 .. 2^18: every log2(n) mod 4 pass schedule.
+            for ([_]usize{ 1000, 3000, 9000, 20000, 70000, 130000 }, [_]i64{ 5, -17, 300, -1234, 999, -4000 }) |len, shift| {
+                const s1 = try allocator.alloc(f64, len);
+                defer allocator.free(s1);
+                const s2 = try allocator.alloc(f64, len + 50);
+                defer allocator.free(s2);
+                var acc: f64 = 0;
+                for (s1) |*x| {
+                    acc = 0.9 * acc + r.float(f64);
+                    x.* = acc;
+                }
+                for (s2, 0..) |*x, i| {
+                    const src = @as(i64, @intCast(i)) - shift;
+                    x.* = if (src >= 0 and src < len) s1[@intCast(src)] + 0.1 * r.float(f64) else r.float(f64);
+                }
+                var out: i64 = undefined;
+                const jobs = [_]accel.LagJob{.{ .a = s1, .b = s2, .out = &out }};
+                const n = GpuAccel.lagFftSize(jobs[0]);
+
+                var res = try ga.correlateGroup(&jobs, &.{0}, n);
+                defer res.deinit(ga);
+                const flat = res.values();
+                var plan = try xcorr.Plan.init(allocator, n);
+                defer plan.deinit();
+                const exact = xcorr.xcorrCircular(&plan, s1, s2);
+                var energy: f64 = 0;
+                for (s1) |x| energy += x * x;
+                for (s2) |x| energy += x * x;
+                var max_err: f64 = 0;
+                for (exact, 0..) |e, i| max_err = @max(max_err, @abs(flat[2 * i] / @as(f64, @floatFromInt(n)) - e) / energy);
+                try std.testing.expect(max_err < GpuAccel.lagTolerance(n) / 10.0);
+
+                try ga.accelerator().bestLags(&jobs);
+                try std.testing.expectEqual(try xcorr.bestLag(allocator, s1, s2), out);
+            }
+        }
+    }.run);
 }
 
 test "GPU spectrograms track the f64 CPU path in every band" {
-    const allocator = std.testing.allocator;
-    const kind: backend.Kind = if (zimt.compiledIn(.metal)) .metal else .cuda;
-    if (!available(kind)) return error.SkipZigTest;
-    const ga = try GpuAccel.create(allocator, toGpu(kind).?);
-    defer ga.destroy();
-    var prng = std.Random.DefaultPrng.init(11);
-    const r = prng.random();
-    // The 50 Hz band is the hard case: poles within ~4e-3 of z = 1 at 48 kHz.
-    inline for (.{ .{ 48000, 32, 24000.0 }, .{ 16000, 21, 8000.0 } }) |cfg| {
-        const sr: u32 = cfg[0];
-        const NB = cfg[1];
-        const f = gammatone.Filters(NB).init(sr, 50.0, cfg[2]);
-        const ws: usize = @intFromFloat(@round(@as(f64, @floatFromInt(sr)) * 0.08));
-        const hop = ws / 4;
-        const hann = try allocator.alloc(f64, ws);
-        defer allocator.free(hann);
-        gammatone.hannWindow(ws, hann);
-        const sig = try allocator.alloc(f64, sr);
-        defer allocator.free(sig);
-        for (sig, 0..) |*x, i| {
-            const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sr));
-            x.* = 0.3 * @sin(2.0 * std.math.pi * 60.0 * t) + 0.05 * (r.float(f64) * 2 - 1);
+    try eachGpu(struct {
+        fn run(ga: *GpuAccel) !void {
+            const allocator = std.testing.allocator;
+            var prng = std.Random.DefaultPrng.init(11);
+            const r = prng.random();
+            // The 50 Hz band is the hard case: poles within ~4e-3 of z = 1 at 48 kHz.
+            inline for (.{ .{ 48000, 32, 24000.0 }, .{ 16000, 21, 8000.0 } }) |cfg| {
+                const sr: u32 = cfg[0];
+                const NB = cfg[1];
+                const f = gammatone.Filters(NB).init(sr, 50.0, cfg[2]);
+                const ws: usize = @intFromFloat(@round(@as(f64, @floatFromInt(sr)) * 0.08));
+                const hop = ws / 4;
+                const hann = try allocator.alloc(f64, ws);
+                defer allocator.free(hann);
+                gammatone.hannWindow(ws, hann);
+                const sig = try allocator.alloc(f64, sr);
+                defer allocator.free(sig);
+                for (sig, 0..) |*x, i| {
+                    const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sr));
+                    x.* = 0.3 * @sin(2.0 * std.math.pi * 60.0 * t) + 0.05 * (r.float(f64) * 2 - 1);
+                }
+                const nf = gammatone.numFrames(sig.len, ws, hop);
+                const want = try allocator.alloc(f64, NB * nf);
+                defer allocator.free(want);
+                const got = try allocator.alloc(f64, NB * nf);
+                defer allocator.free(got);
+                const params: accel.SpecParams = .{ .bands = &f.bands, .window_size = ws, .hop_size = hop, .hann = hann };
+                var cpu: accel.Cpu = .{ .allocator = allocator };
+                defer cpu.deinit();
+                try cpu.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = want }});
+                try ga.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = got }});
+                for (want, got) |x, y| try std.testing.expect(@abs(y - x) <= 5e-5 * x);
+            }
         }
-        const nf = gammatone.numFrames(sig.len, ws, hop);
-        const want = try allocator.alloc(f64, NB * nf);
-        defer allocator.free(want);
-        const got = try allocator.alloc(f64, NB * nf);
-        defer allocator.free(got);
-        const params: accel.SpecParams = .{ .bands = &f.bands, .window_size = ws, .hop_size = hop, .hann = hann };
-        var cpu: accel.Cpu = .{ .allocator = allocator };
-        defer cpu.deinit();
-        try cpu.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = want }});
-        try ga.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = got }});
-        for (want, got) |x, y| try std.testing.expect(@abs(y - x) <= 5e-5 * x);
-    }
+    }.run);
 }
