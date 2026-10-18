@@ -134,7 +134,24 @@ pub fn alignAndTruncate(
     deg: []const f64,
     sample_rate: u32,
 ) !Trimmed {
-    var aligned = try globallyAlign(allocator, cache, ref, deg, sample_rate);
+    var lag: i64 = 0;
+    if (ref.len > 0 and deg.len > 0) {
+        const env = try alignmentEnvelopes(allocator, ref, deg);
+        defer allocator.free(env.ref);
+        defer allocator.free(env.deg);
+        lag = try xcorr.bestLagCached(cache, env.ref, env.deg);
+    }
+    return truncateAligned(allocator, ref, deg, lag, sample_rate);
+}
+
+pub fn truncateAligned(
+    allocator: std.mem.Allocator,
+    ref: []const f64,
+    deg: []const f64,
+    lag: i64,
+    sample_rate: u32,
+) !Trimmed {
+    var aligned = try applyLag(allocator, ref.len, deg, lag, sample_rate);
     errdefer if (aligned.deg_owned) allocator.free(aligned.deg);
 
     const ref_len = ref.len;
@@ -247,13 +264,73 @@ pub const RealignPrep = struct {
     }
 };
 
-/// Slice, align and truncate each match, reusing grid-aligned frames from
-/// `raw` or queueing a job in `spec_jobs`. Jobs point into the returned
-/// `RealignPrep`, which must outlive them.
+pub const PatchLag = struct {
+    match_index: usize,
+    ref_audio: []f64,
+    deg_audio: []f64,
+    env: Envelopes,
+    lag: i64 = 0,
+};
+
+pub const RealignPlan = struct {
+    patches: std.ArrayList(PatchLag) = .empty,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *RealignPlan) void {
+        for (self.patches.items) |p| {
+            self.allocator.free(p.ref_audio);
+            self.allocator.free(p.deg_audio);
+            self.allocator.free(p.env.ref);
+            self.allocator.free(p.env.deg);
+        }
+        self.patches.deinit(self.allocator);
+    }
+};
+
+/// Queues each valid match's envelope lag search in `lag_jobs`, which point
+/// into the returned plan, so batches across pairs reach the accelerator.
+pub fn planRealign(
+    allocator: std.mem.Allocator,
+    matches: *const dp.Matches,
+    ref_signal: []const f64,
+    deg_signal: []const f64,
+    sample_rate: u32,
+    window_size: usize,
+    lag_jobs: *std.ArrayList(accel.LagJob),
+) !RealignPlan {
+    var plan: RealignPlan = .{ .allocator = allocator };
+    errdefer plan.deinit();
+    // No reallocation: the lag jobs point in.
+    try plan.patches.ensureTotalCapacity(allocator, matches.items.len);
+    for (matches.items, 0..) |*m, mi| {
+        if (!m.valid) continue;
+        const ref_audio = try sliceAudio(allocator, ref_signal, sample_rate, m.ref_patch_start_time, m.ref_patch_end_time);
+        errdefer allocator.free(ref_audio);
+        const deg_audio = try sliceAudio(allocator, deg_signal, sample_rate, m.deg_patch_start_time, m.deg_patch_end_time);
+        errdefer allocator.free(deg_audio);
+        if (ref_audio.len < window_size or deg_audio.len < window_size) {
+            allocator.free(ref_audio);
+            allocator.free(deg_audio);
+            continue;
+        }
+        const env = alignmentEnvelopes(allocator, ref_audio, deg_audio) catch {
+            allocator.free(ref_audio);
+            allocator.free(deg_audio);
+            continue;
+        };
+        plan.patches.appendAssumeCapacity(.{ .match_index = mi, .ref_audio = ref_audio, .deg_audio = deg_audio, .env = env });
+    }
+    try lag_jobs.ensureUnusedCapacity(allocator, plan.patches.items.len);
+    for (plan.patches.items) |*p| lag_jobs.appendAssumeCapacity(.{ .a = p.env.ref, .b = p.env.deg, .out = &p.lag });
+    return plan;
+}
+
+/// Reuses grid-aligned frames from `raw` or queues a job in `spec_jobs`;
+/// jobs point into the returned `RealignPrep`.
 pub fn prepareRealign(
     num_bands: usize,
     allocator: std.mem.Allocator,
-    cache: *xcorr.Cache,
+    plan: *const RealignPlan,
     matches: *const dp.Matches,
     ref_signal: []const f64,
     deg_signal: []const f64,
@@ -266,18 +343,13 @@ pub fn prepareRealign(
     var prep: RealignPrep = .{ .allocator = allocator };
     errdefer prep.deinit();
 
-    for (matches.items, 0..) |*m, mi| {
-        if (!m.valid) continue;
-
+    for (plan.patches.items) |p| {
+        const mi = p.match_index;
+        const m = &matches.items[mi];
         const ref_layout = sliceLayout(ref_signal.len, sample_rate, m.ref_patch_start_time, m.ref_patch_end_time);
         const deg_layout = sliceLayout(deg_signal.len, sample_rate, m.deg_patch_start_time, m.deg_patch_end_time);
-        const ref_audio = try sliceAudio(allocator, ref_signal, sample_rate, m.ref_patch_start_time, m.ref_patch_end_time);
-        defer allocator.free(ref_audio);
-        const deg_audio = try sliceAudio(allocator, deg_signal, sample_rate, m.deg_patch_start_time, m.deg_patch_end_time);
-        defer allocator.free(deg_audio);
-        if (ref_audio.len < window_size or deg_audio.len < window_size) continue;
 
-        var trimmed = alignAndTruncate(allocator, cache, ref_audio, deg_audio, sample_rate) catch continue;
+        var trimmed = truncateAligned(allocator, p.ref_audio, p.deg_audio, p.lag, sample_rate) catch continue;
         if (trimmed.ref.len < window_size) {
             trimmed.deinit();
             continue;

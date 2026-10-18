@@ -13,7 +13,6 @@ const realign_mod = @import("realign.zig");
 const svr = @import("svr.zig");
 const lattice = @import("lattice.zig");
 const vad = @import("vad.zig");
-const xcorr = @import("xcorr.zig");
 const accel = @import("accel.zig");
 pub const Accelerator = accel.Accelerator;
 
@@ -228,11 +227,9 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
         cached_hop_size: usize = 0,
         cached_hann: []f64 = &.{},
         cached_frame_duration: f64 = 0.0,
-        xcorr_cache: ?xcorr.Cache = null,
 
         pub fn deinit(self: *Self) void {
             if (self.cached_hann.len > 0) self.allocator.free(self.cached_hann);
-            if (self.xcorr_cache) |*c| c.deinit();
         }
 
         fn ensureCache(self: *Self, sample_rate: u32) !void {
@@ -265,6 +262,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             ref_indices: []usize = &.{},
             plan: ?dp.SearchPlan = null,
             matches: ?dp.Matches = null,
+            realign_plan: ?realign_mod.RealignPlan = null,
             realign: ?realign_mod.RealignPrep = null,
 
             fn freeEnvelopes(st: *State, a: std.mem.Allocator) void {
@@ -285,6 +283,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
                 a.free(st.ref_indices);
                 if (st.plan) |*x| x.deinit();
                 if (st.matches) |*x| x.deinit();
+                if (st.realign_plan) |*x| x.deinit();
                 if (st.realign) |*x| x.deinit();
             }
 
@@ -305,8 +304,6 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             if (sample_rate == 0) return Error.InvalidInput;
             try self.ensureCache(sample_rate);
             const allocator = self.allocator;
-            if (self.xcorr_cache == null) self.xcorr_cache = xcorr.Cache.init(allocator);
-            const cache = &self.xcorr_cache.?;
             const filters = &self.cached_filters.?;
             const window_size = self.cached_window_size;
             const hop_size = self.cached_hop_size;
@@ -366,13 +363,39 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             // 6a: DP similarity matrix.
             try acc.patchSimilarities(sim_jobs.items);
 
-            // 6b: DP backtrace; queue realignment.
-            spec_jobs.clearRetainingCapacity();
+            // 6b: DP backtrace; queue every patch's realignment lag search.
+            var patch_lags: std.ArrayList(accel.LagJob) = .empty;
+            defer patch_lags.deinit(allocator);
             for (pairs, states) |pair, *st| {
                 if (!st.live()) continue;
-                self.searchPair(pair, st, options, sample_rate, frame_duration, cache, &spec_jobs) catch |e| {
+                self.searchPair(pair, st, options, sample_rate, frame_duration, &patch_lags) catch |e| {
                     st.failed = e;
                 };
+            }
+            try acc.bestLags(patch_lags.items);
+
+            // 6c: align and truncate patches; queue their spectrograms.
+            spec_jobs.clearRetainingCapacity();
+            for (pairs, states) |pair, *st| {
+                if (!st.live() or st.realign_plan == null) continue;
+                st.realign = realign_mod.prepareRealign(
+                    NUM_BANDS,
+                    allocator,
+                    &st.realign_plan.?,
+                    &st.matches.?,
+                    pair.ref,
+                    st.deg,
+                    sample_rate,
+                    window_size,
+                    hop_size,
+                    .{ .ref = st.ref_raw, .nf_ref = st.nf_ref, .deg = st.deg_raw, .nf_deg = st.nf_deg },
+                    &spec_jobs,
+                ) catch |e| {
+                    st.failed = e;
+                    continue;
+                };
+                st.realign_plan.?.deinit();
+                st.realign_plan = null;
             }
 
             // 7: realigned spectrograms, rescore.
@@ -469,8 +492,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             options: Options,
             sample_rate: u32,
             frame_duration: f64,
-            cache: *xcorr.Cache,
-            spec_jobs: *std.ArrayList(accel.SpecJob),
+            lag_jobs: *std.ArrayList(accel.LagJob),
         ) !void {
             const allocator = self.allocator;
             st.matches = try dp.findOptimalDegPatchesFromSims(
@@ -485,19 +507,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
                 frame_duration,
             );
             if (options.disable_realignment) return;
-            st.realign = try realign_mod.prepareRealign(
-                NUM_BANDS,
-                allocator,
-                cache,
-                &st.matches.?,
-                pair.ref,
-                st.deg,
-                sample_rate,
-                self.cached_window_size,
-                self.cached_hop_size,
-                .{ .ref = st.ref_raw, .nf_ref = st.nf_ref, .deg = st.deg_raw, .nf_deg = st.nf_deg },
-                spec_jobs,
-            );
+            st.realign_plan = try realign_mod.planRealign(allocator, &st.matches.?, pair.ref, st.deg, sample_rate, self.cached_window_size, lag_jobs);
         }
     };
 }
