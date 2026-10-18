@@ -166,7 +166,7 @@ glibc 2.17 on Linux). macOS wheels with Metal need a macOS host.
 |---|---|---|
 | `cpu` | always | f64 reference |
 | `metal` | `-Dmetal` | needs the Xcode Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) |
-| `cuda` | `-Dcuda` | needs `slangc` with NVRTC to build, `libcuda` to run; **untested** |
+| `cuda` | `-Dcuda` | needs `slangc` with NVRTC to build (`nix develop .#cuda`) and fetches the CUDA headers; loads `libcuda` at run time |
 
 The model talks to an `Accelerator` interface ([`src/accel.zig`](src/accel.zig))
 covering the three hot spots: gammatone spectrograms, the DP
@@ -198,12 +198,16 @@ probes `/usr/bin/xcrun metal` (10 s timeout, nix SDK variables unset)
 first; if the toolchain is missing, the default build drops Metal with a
 warning and `-Dmetal=true` fails.
 
+CUDA kernels compile to PTX with `slangc`, which loads NVRTC. The driver
+library is `dlopen`ed rather than linked, so a CUDA build runs on machines
+without an NVIDIA driver and reports `cuda` unavailable there.
+
 ## Limitations
 
 - No resampling, as upstream: both signals must share a sample rate.
   Audio mode expects 48 kHz (`allow_unsupported_sample_rates` overrides),
   and speech mode warns above 16 kHz.
-- The CUDA backend has not been run on NVIDIA hardware.
+- CUDA has been run only on Linux (RTX 3080); the Windows path is untested.
 - The TFLite interpreter covers the 18 float ops in
   [`src/tflite.zig`](src/tflite.zig), enough for upstream's lattice model.
 

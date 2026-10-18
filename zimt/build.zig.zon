@@ -6,6 +6,15 @@
     .version = "0.1.0",
     .fingerprint = 0xe5fbcf84f9cd616a,
     .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // translate-c input for the CUDA backend (cuda.h, cudaTypedefs.h, from
+        // NVIDIA's redistributable cudart); fetched only with -Dcuda.
+        .cuda_headers = .{
+            .url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.9.79-archive.tar.xz",
+            .hash = "N-V-__8AANnGkwDB6_nGYUk1YWrchHY2h057CBKF_2EudklG",
+            .lazy = true,
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

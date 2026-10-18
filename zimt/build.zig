@@ -5,12 +5,13 @@
 //!
 //!   const zimt_build = @import("zimt");
 //!   const metal = zimt_build.resolveMetal(b, b.option(bool, "metal", "..."), target.result.os.tag);
-//!   const dep = b.dependency("zimt", .{ .metal = metal });
+//!   const dep = b.dependency("zimt", .{ .target = target, .metal = metal });
 //!   const kernels = zimt_build.addKernels(b, .{ .zimt = dep, .sources = b.path("shaders"),
 //!       .generated = b.path("shaders/generated"), .entries = &.{ "saxpy" }, .metal = metal });
 //!   b.step("shaders", "...").dependOn(zimt_build.addRegenerate(b, .{ ... }));
 //!
 //! slangc is needed only for `addRegenerate` and CUDA; Metal builds need only Xcode's Metal toolchain.
+//! CUDA builds fetch the CUDA headers (a lazy package dependency, for translate-c).
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
@@ -19,7 +20,9 @@ pub fn build(b: *std.Build) void {
     const os = target.result.os.tag;
     const metal = b.option(bool, "metal", "Metal backend (default: on when macOS and the Metal toolchain works)") orelse
         resolveMetal(b, null, os);
-    const cuda = b.option(bool, "cuda", "CUDA backend (links libcuda)") orelse false;
+    const cuda = b.option(bool, "cuda", "CUDA backend (loads libcuda at run time)") orelse false;
+    if (cuda and target.result.abi.isMusl())
+        std.process.fatal("-Dcuda: musl binaries cannot dlopen the system's (glibc) GPU drivers", .{});
 
     const opts = b.addOptions();
     opts.addOption(bool, "metal", metal);
@@ -27,6 +30,12 @@ pub fn build(b: *std.Build) void {
     // No target or optimize mode: the module takes the importer's.
     const mod = b.addModule("zimt", .{ .root_source_file = b.path("src/root.zig") });
     mod.addOptions("zimt_options", opts);
+    const cuda_c = if (cuda) translateHeaders(b, target, "cuda_headers",
+        \\#include <cuda.h>
+        \\#include <cudaTypedefs.h>
+        \\
+    ) else null;
+    if (cuda_c) |m| mod.addImport("cuda_c", m);
     if (metal) {
         // Zig's own SDK detection fails under nix.
         switch (runXcrun(b, &.{ "-sdk", "macosx", "--show-sdk-path" })) {
@@ -43,10 +52,8 @@ pub fn build(b: *std.Build) void {
         mod.linkFramework("Metal", .{});
         mod.linkFramework("Foundation", .{});
     }
-    if (cuda) {
-        mod.link_libc = true;
-        linkSystemLib(mod, "cuda");
-    }
+    // dlopen() needs libc.
+    if (cuda) mod.link_libc = true;
 
     const bindgen = b.addExecutable(.{
         .name = "zimt-bindgen",
@@ -61,6 +68,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run zimt's tests");
     const unit_mod = b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
     unit_mod.addOptions("zimt_options", opts);
+    if (cuda_c) |m| unit_mod.addImport("cuda_c", m);
+    if (cuda) unit_mod.link_libc = true;
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = unit_mod })).step);
     const test_kernels = kernelsModule(b, bindgen, mod, .{
         .sources = b.path("test"),
@@ -78,6 +87,15 @@ pub fn build(b: *std.Build) void {
         .generated_dir = "test/generated",
         .entries = &.{"saxpy"},
     }));
+}
+
+/// Null until the lazy dependency is fetched.
+fn translateHeaders(b: *std.Build, target: std.Build.ResolvedTarget, dep_name: []const u8, source: []const u8) ?*std.Build.Module {
+    const dep = b.lazyDependency(dep_name, .{}) orelse return null;
+    const header = b.addWriteFiles().add(b.fmt("{s}.h", .{dep_name}), source);
+    const tc = b.addTranslateC(.{ .root_source_file = header, .target = target, .optimize = .ReleaseFast });
+    tc.addIncludePath(dep.path("include"));
+    return tc.createModule();
 }
 
 /// `Module.linkSystemLibrary` without its libc-name check, which needs a

@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     const enable_cuda = b.option(bool, "cuda", "Build the CUDA GPU backend (needs slangc with NVRTC at build time, libcuda at run time)") orelse false;
     const enable_metal = zimt.resolveMetal(b, metal_opt, os);
 
-    const zimt_dep = b.dependency("zimt", .{ .metal = enable_metal, .cuda = enable_cuda });
+    const zimt_dep = b.dependency("zimt", .{ .target = target, .metal = enable_metal, .cuda = enable_cuda });
     const zimt_mod = zimt_dep.module("zimt");
     const kernels_mod = zimt.addKernels(b, .{
         .zimt = zimt_dep,

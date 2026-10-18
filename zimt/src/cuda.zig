@@ -1,46 +1,56 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
-//! CUDA Driver API backend: one context and stream per device, kernels from PTX.
+//! CUDA Driver API backend: PTX kernels, one stream per device on the GPU's
+//! primary context.
 const std = @import("std");
 const zimt = @import("root.zig");
 const driver = @import("cuda/driver.zig");
+const c = driver.c;
+const api = &driver.api;
 
 const State = struct {
-    device: driver.Device,
-    context: driver.Context,
-    stream: driver.Stream,
+    device: c.CUdevice,
+    context: c.CUcontext,
+    stream: c.CUstream,
 };
 
 fn state(d: *zimt.Device) *State {
     return @ptrCast(@alignCast(d.state));
 }
 
+fn call(r: c.CUresult) !void {
+    driver.check(r) catch return zimt.Error.DeviceError;
+}
+
 /// Contexts are per thread; bind before every call so devices work across threads.
 fn bind(d: *zimt.Device) !void {
-    driver.ctxSetCurrent(state(d).context) catch return zimt.Error.DeviceError;
+    try call(api.cuCtxSetCurrent(state(d).context));
 }
 
 pub fn open(d: *zimt.Device) !void {
     driver.init() catch return zimt.Error.BackendUnavailable;
-    const n = driver.deviceCount() catch return zimt.Error.BackendUnavailable;
-    if (n == 0) return zimt.Error.BackendUnavailable;
+    var n: c_int = 0;
+    if (api.cuDeviceGetCount(&n) != c.CUDA_SUCCESS or n == 0) return zimt.Error.BackendUnavailable;
     const st = try d.allocator.create(State);
     errdefer d.allocator.destroy(st);
-    st.device = driver.deviceGet(0) catch return zimt.Error.BackendUnavailable;
-    st.context = driver.ctxCreate(st.device, 0) catch return zimt.Error.BackendUnavailable;
-    errdefer driver.ctxDestroy(st.context);
-    st.stream = driver.streamCreate() catch return zimt.Error.DeviceError;
+    st.* = .{ .device = 0, .context = null, .stream = null };
+    if (api.cuDeviceGet(&st.device, 0) != c.CUDA_SUCCESS) return zimt.Error.BackendUnavailable;
+    if (api.cuDevicePrimaryCtxRetain(&st.context, st.device) != c.CUDA_SUCCESS) return zimt.Error.BackendUnavailable;
+    errdefer _ = api.cuDevicePrimaryCtxRelease(st.device);
+    try call(api.cuCtxSetCurrent(st.context));
+    // Blocking: the synchronous copies run on the legacy default stream.
+    try call(api.cuStreamCreate(&st.stream, 0));
     d.state = st;
-    const nm = driver.deviceName(st.device, &d.name_buf) catch d.name_buf[0..0];
-    d.name_len = nm.len;
+    if (api.cuDeviceGetName(&d.name_buf, d.name_buf.len, st.device) == c.CUDA_SUCCESS)
+        d.name_len = std.mem.indexOfScalar(u8, &d.name_buf, 0) orelse d.name_buf.len;
 }
 
 pub fn close(d: *zimt.Device) void {
     const st = state(d);
     bind(d) catch {};
-    driver.streamDestroy(st.stream);
-    driver.ctxDestroy(st.context);
+    _ = api.cuStreamDestroy(st.stream);
+    _ = api.cuDevicePrimaryCtxRelease(st.device);
     d.allocator.destroy(st);
 }
 
@@ -51,41 +61,44 @@ pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(
     defer d.allocator.free(z);
     @memcpy(z[0..code.len], code);
     z[code.len] = 0;
-    const m = driver.moduleLoadData(z) catch return zimt.Error.DeviceError;
-    errdefer driver.moduleUnload(m);
-    const f = driver.moduleGetFunction(m, K.name) catch return zimt.Error.KernelNotFound;
+    var m: c.CUmodule = null;
+    try call(api.cuModuleLoadData(&m, z.ptr));
+    errdefer _ = api.cuModuleUnload(m);
+    var f: c.CUfunction = null;
+    if (api.cuModuleGetFunction(&f, m, K.name) != c.CUDA_SUCCESS) return zimt.Error.KernelNotFound;
     return .{ .handle = @intFromPtr(f), .module = @intFromPtr(m) };
 }
 
 pub fn release(d: *zimt.Device, _: usize, module: usize) void {
     bind(d) catch {};
-    driver.moduleUnload(@ptrFromInt(module));
+    _ = api.cuModuleUnload(@ptrFromInt(module));
 }
 
 pub fn alloc(d: *zimt.Device, bytes: usize) !zimt.Buffer {
     try bind(d);
-    const p = driver.memAlloc(@max(bytes, 4)) catch return zimt.Error.OutOfMemory;
+    var p: c.CUdeviceptr = 0;
+    if (api.cuMemAlloc(&p, @max(bytes, 4)) != c.CUDA_SUCCESS) return zimt.Error.OutOfMemory;
     return .{ .handle = p, .size = bytes };
 }
 
 pub fn free(d: *zimt.Device, buf: zimt.Buffer) void {
     bind(d) catch {};
-    driver.memFree(buf.handle);
+    _ = api.cuMemFree(buf.handle);
 }
 
 pub fn upload(d: *zimt.Device, buf: zimt.Buffer, offset: usize, data: []const u8) !void {
     try bind(d);
-    driver.memcpyHtoD(buf.handle + offset, data) catch return zimt.Error.DeviceError;
+    try call(api.cuMemcpyHtoD(buf.handle + offset, data.ptr, data.len));
 }
 
 pub fn download(d: *zimt.Device, buf: zimt.Buffer, offset: usize, out: []u8) !void {
     try bind(d);
-    driver.memcpyDtoH(out, buf.handle + offset) catch return zimt.Error.DeviceError;
+    try call(api.cuMemcpyDtoH(out.ptr, buf.handle + offset, out.len));
 }
 
 pub fn zero(d: *zimt.Device, buf: zimt.Buffer, offset: usize, bytes: usize) !void {
     try bind(d);
-    driver.memsetD8(buf.handle + offset, 0, bytes) catch return zimt.Error.DeviceError;
+    try call(api.cuMemsetD8(buf.handle + offset, 0, bytes));
 }
 
 /// Slang's CUDA `StructuredBuffer<T>` parameter: `{ T* data; size_t count; }`.
@@ -110,33 +123,27 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
             },
         }
     }
-    driver.launchKernel(
-        @ptrFromInt(handle),
-        groups,
-        K.threads,
-        0,
-        state(d).stream,
-        &ptrs,
-    ) catch return zimt.Error.DeviceError;
+    const t = K.threads;
+    try call(api.cuLaunchKernel(@ptrFromInt(handle), groups[0], groups[1], groups[2], t[0], t[1], t[2], 0, state(d).stream, &ptrs, null));
 }
 
 /// A submission is an event recorded on the stream.
 pub fn submit(d: *zimt.Device) !usize {
     try bind(d);
-    const e = driver.eventRecordNew(state(d).stream) catch return zimt.Error.DeviceError;
+    var e: c.CUevent = null;
+    try call(api.cuEventCreate(&e, c.CU_EVENT_DISABLE_TIMING));
+    errdefer _ = api.cuEventDestroy(e);
+    try call(api.cuEventRecord(e, state(d).stream));
     return @intFromPtr(e);
 }
 
 /// Destroys the event once complete or failed.
 pub fn finish(d: *zimt.Device, handle: usize, block: bool) !bool {
     try bind(d);
-    const e: driver.Event = @ptrFromInt(handle);
-    const result: anyerror!void = if (block) driver.eventSynchronize(e) else blk: {
-        const finished = driver.eventQuery(e) catch |err| break :blk err;
-        if (!finished) return false;
-        break :blk {};
-    };
-    driver.eventDestroy(e);
-    result catch return zimt.Error.DeviceError;
+    const e: c.CUevent = @ptrFromInt(handle);
+    const r = if (block) api.cuEventSynchronize(e) else api.cuEventQuery(e);
+    if (r == c.CUDA_ERROR_NOT_READY) return false;
+    _ = api.cuEventDestroy(e);
+    try call(r);
     return true;
 }

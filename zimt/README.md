@@ -74,6 +74,12 @@ b.step("shaders", "Regenerate MSL + reflection").dependOn(zimt.addRegenerate(b, 
 - **Kernels compile to `.metallib`** at build time with IEEE math, for
   macOS 13 by default (`macos_min`, `fast_math`).
 - **CUDA (`.cuda = true`)** compiles PTX with `slangc`, which needs NVRTC.
+  `libcuda` is loaded at run time (`libcuda.so.1`, then NixOS's
+  `/run/opengl-driver/lib`; `nvcuda.dll` on Windows), so without a driver
+  `Device.open` returns `BackendUnavailable`. The API comes from NVIDIA's
+  redistributable `cuda.h` and `cudaTypedefs.h` through translate-c (a
+  lazy package, fetched only with `.cuda`), and entry points resolve with
+  `cuGetProcAddress`, so drivers from CUDA 12 on.
 - **One entry point per `.slang` file**, so each kernel's Metal buffer
   indices are its own.
 - **The `zimt` module has no target of its own** and takes the target of
