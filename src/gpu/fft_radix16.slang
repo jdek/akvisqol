@@ -4,6 +4,7 @@
 // Radix-16 Stockham pass (see fft_radix4.slang) as 4x4 radix-4 butterflies
 // in registers. One thread per 16 points.
 import fft_common;
+import zimt;
 
 // (cos, sin)(2π j / 16), j <= 3·3.
 static const float2 W16[10] = {
@@ -31,7 +32,7 @@ void fft_radix16(
     uniform uint total,
     uniform float sign)
 {
-    uint g = tid.x;
+    uint g = zimt_index(tid);
     if (g >= total) return;
     uint n = 1u << log2_n;
     uint q = n >> 4;

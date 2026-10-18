@@ -1,7 +1,7 @@
 # zimt
 
 A small compute runtime for [Slang](https://shader-slang.org) kernels on
-Metal and CUDA, written in Zig.
+Metal, CUDA and Vulkan, written in Zig.
 
 Its build runs `slangc -reflection-json` once per kernel and turns the
 result into a Zig binding: a comptime description of the kernel with a
@@ -9,7 +9,9 @@ typed `Args` struct. A dispatch takes its arguments by name, and each
 backend lowers them at comptime:
 - Metal packs the uniforms at their reflected offsets and binds buffers at
   their reflected indices;
-- CUDA builds the kernel parameter array.
+- CUDA builds the kernel parameter array;
+- Vulkan pushes the uniforms as push constants and the buffers as push
+  descriptors at their reflected SPIR-V bindings.
 
 Nothing about the layout is decided at run time, and when only one backend
 is compiled in, the backend switch folds away too.
@@ -33,6 +35,8 @@ The kernel behind it is plain Slang. Entry-point `uniform` parameters
 become `Args` fields, in declaration order:
 
 ```slang
+import zimt;
+
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void saxpy(uint3 tid: SV_DispatchThreadID,
@@ -40,6 +44,11 @@ void saxpy(uint3 tid: SV_DispatchThreadID,
            uniform RWStructuredBuffer<float> y,
            uniform float a,
            uniform uint n)
+{
+    uint i = zimt_index(tid); // not tid.x: see dispatch1d below
+    if (i >= n) return;
+    y[i] = a * x[i] + y[i];
+}
 ```
 
 ## Using it from a build
@@ -51,26 +60,32 @@ Add a dependency to your `build.zig.zon`, then use the helpers from your
 const zimt = @import("zimt");
 
 const metal = zimt.resolveMetal(b, b.option(bool, "metal", "Metal backend"), target.result.os.tag);
-const dep = b.dependency("zimt", .{ .metal = metal });
+const vulkan = b.option(bool, "vulkan", "Vulkan backend") orelse false;
+// `target` is needed when Vulkan is on (translate-c of the Vulkan headers).
+const dep = b.dependency("zimt", .{ .target = target, .metal = metal, .vulkan = vulkan });
 const kernels = zimt.addKernels(b, .{
     .zimt = dep,
     .sources = b.path("shaders"),             // <entry>.slang
-    .generated = b.path("shaders/generated"), // checked-in <entry>.metal + .json
-    .entries = &.{"saxpy"},
+    .generated = b.path("shaders/generated"), // checked-in .metal, .spv + reflection
+    .entries = &.{.{ .name = "saxpy" }},
     .metal = metal,
+    .vulkan = vulkan,
 });
 exe_mod.addImport("zimt", dep.module("zimt"));
 exe_mod.addImport("my_kernels", kernels);
-b.step("shaders", "Regenerate MSL + reflection").dependOn(zimt.addRegenerate(b, .{
+b.step("shaders", "Regenerate MSL, SPIR-V + reflection").dependOn(zimt.addRegenerate(b, .{
+    .zimt = dep, // for zimt.slang
     .sources = b.path("shaders"),
     .generated_dir = "shaders/generated",
-    .entries = &.{"saxpy"},
+    .entries = &.{.{ .name = "saxpy" }},
 }));
 ```
 
-- **MSL and reflection are checked in**, so a Metal build needs Xcode's
-  Metal toolchain but no Slang install. Run `zig build shaders` after
-  editing a kernel.
+- **MSL, SPIR-V and their reflection are checked in**, so Metal and Vulkan
+  builds need no Slang install. Run `zig build shaders` after editing a
+  kernel; it needs `slangc` and `spirv-val`, which checks the SPIR-V
+  against Vulkan 1.2. Bindgen checks that the Metal and SPIR-V reflections
+  agree (parameters, uniform layout, thread-group size).
 - **Kernels compile to `.metallib`** at build time with IEEE math, for
   macOS 13 by default (`macos_min`, `fast_math`).
 - **CUDA (`.cuda = true`)** compiles PTX with `slangc`, which needs NVRTC.
@@ -80,8 +95,16 @@ b.step("shaders", "Regenerate MSL + reflection").dependOn(zimt.addRegenerate(b, 
   redistributable `cuda.h` and `cudaTypedefs.h` through translate-c (a
   lazy package, fetched only with `.cuda`), and entry points resolve with
   `cuGetProcAddress`, so drivers from CUDA 12 on.
-- **One entry point per `.slang` file**, so each kernel's Metal buffer
-  indices are its own.
+- **Vulkan (`.vulkan = true`)** embeds the checked-in SPIR-V. Its API
+  bindings are translate-c output of `vulkan_core.h` from Khronos'
+  Vulkan-Headers, a lazy package dependency fetched only when Vulkan is on.
+  The loader is `dlopen`ed (`libvulkan.so.1`, `vulkan-1.dll`). musl
+  targets can't load it, so `-Dvulkan` fails the build there.
+- **Kernels `import zimt;`**, which zimt adds to the Slang include path
+  (zimt's `src/slang`), for `zimt_index`.
+- **One entry point per kernel**: `.name` compiles `<name>.slang`'s
+  `<name>`; `.source` and `.entry` pick another file and a specialized
+  generic (`fft_pass<Radix16>`), so one generic kernel can be several.
 - **The `zimt` module has no target of its own** and takes the target of
   the module that imports it.
 
@@ -100,8 +123,9 @@ Xcode.
 - **Ordering:** dispatches run in submission order, and each sees the
   previous one's writes.
 - **Fences:** `submit()` returns a fence, a point on a monotonic
-  timeline. Each submission is a committed command buffer on Metal and a
-  recorded event on CUDA.
+  timeline. Each submission is a committed command buffer on Metal, a
+  recorded event on CUDA, and a command buffer signalling a timeline
+  semaphore on Vulkan.
   - `wait(fence)` blocks until exactly the work up to that fence is done;
     later submissions keep running.
   - `done(fence)` checks without blocking.
@@ -113,9 +137,39 @@ Xcode.
   work first.
 - **Memory:** Metal buffers use shared storage, and `Buffer.host` is
   their CPU mapping. CUDA buffers are device memory, moved by explicit
-  copies.
+  copies. Vulkan buffers are either (see [Vulkan](#vulkan)).
+- **`dispatch1d`** launches at least `n` threads. Up to 32768 groups it is
+  a single row; beyond that it folds into rows of 32768 groups (Vulkan
+  only guarantees 65535 groups per dimension), so kernels take their
+  index from `zimt_index(tid)` rather than `tid.x`, and
+  bounds-check it.
 - **Access:** each buffer parameter's reflected access (`read`, `write`
-  or `read_write`) is in `K.params`. Metal and CUDA order dispatches
-  themselves and don't use it. It is there for a backend that needs
-  explicit barriers.
+  or `read_write`) is in `K.params`. No backend uses it yet: Vulkan puts
+  a full memory barrier before every dispatch. It is there for eliding
+  barriers later.
 - **Threads:** a `Device` is not thread-safe, so serialise access to it.
+
+## Vulkan
+
+Vulkan 1.2 devices with timeline semaphores and `VK_KHR_push_descriptor`
+qualify; others are skipped. One compute queue (compute-only if there is
+one), push descriptors and push constants, so there are no descriptor
+pools.
+
+- **Device:** the first discrete GPU, then integrated, then others, CPU
+  implementations last. `ZIMT_VULKAN_DEVICE=<index|name substring>`
+  overrides it (e.g. `llvmpipe` for Mesa's lavapipe). `Device.name()` is
+  `<device> (<driver>)`.
+- **Memory:** where device-local, host-visible memory is most of the
+  device's memory (APUs, ReBAR, CPU drivers), buffers live there and
+  `Buffer.host` maps them, as on Metal. Otherwise (e.g. a 256 MiB BAR
+  window without ReBAR) buffers are device-local, `Buffer.host` is null,
+  and transfers go through a reused host staging buffer (32 MiB chunks).
+  A full mapped heap also falls back to device-local.
+  `ZIMT_VULKAN_NO_HOST_MAP=1` forces the staged path.
+- **Validation:** `ZIMT_VULKAN_VALIDATION=1` enables
+  `VK_LAYER_KHRONOS_validation` with synchronisation validation. Errors
+  are logged and fail the next `submit`, `wait` or transfer; a missing
+  layer fails `Device.open` loudly (set `VK_LAYER_PATH`).
+- **Freeing** a buffer or kernel while submitted work is outstanding
+  waits for the queue first.

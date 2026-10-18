@@ -2,6 +2,11 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+uint zimt_index_0(uint3 tid_0)
+{
+    return tid_0.x + tid_0.y * 2097152U;
+}
+
 float2 cmul_0(float2 a_0, float2 b_0)
 {
     float _S1 = a_0.x;
@@ -35,14 +40,14 @@ struct KernelContext_0
     packed_float2 device* entryPointParams_tw_0;
 };
 
-[[kernel]] void fft_radix2(uint3 tid_0 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_x_1 [[buffer(1)]], packed_float2 device* entryPointParams_y_1 [[buffer(2)]], packed_float2 device* entryPointParams_tw_1 [[buffer(3)]])
+[[kernel]] void fft_radix2(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], packed_float2 device* entryPointParams_x_1 [[buffer(1)]], packed_float2 device* entryPointParams_y_1 [[buffer(2)]], packed_float2 device* entryPointParams_tw_1 [[buffer(3)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
     (&kernelContext_0)->entryPointParams_x_0 = entryPointParams_x_1;
     (&kernelContext_0)->entryPointParams_y_0 = entryPointParams_y_1;
     (&kernelContext_0)->entryPointParams_tw_0 = entryPointParams_tw_1;
-    uint g_0 = tid_0.x;
+    uint g_0 = zimt_index_0(tid_1);
     if(g_0 >= (entryPointParams_1->total_0))
     {
         return;

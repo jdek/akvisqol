@@ -5,6 +5,7 @@
 // Passes with p = 1, R1, R1·R2, ... up to n give natural order.
 // sign = -1 forward, +1 inverse (unscaled). One thread per 4 points.
 import fft_common;
+import zimt;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -18,7 +19,7 @@ void fft_radix4(
     uniform uint total,
     uniform float sign)
 {
-    uint g = tid.x;
+    uint g = zimt_index(tid);
     if (g >= total) return;
     uint n = 1u << log2_n;
     uint q = n >> 2;

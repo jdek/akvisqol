@@ -6,6 +6,7 @@
 //
 // rows: (num_rows, 3) u32 — spec offset (row-major [bands, nf]), nf, patch column.
 import nsim_common;
+import zimt;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -20,9 +21,10 @@ void ref_stats(
     uniform uint patch_size)
 {
     uint cells = num_bands * patch_size;
-    uint row = tid.x / cells;
+    uint id = zimt_index(tid);
+    uint row = id / cells;
     if (row >= num_rows) return;
-    uint cell = tid.x % cells;
+    uint cell = id % cells;
     int r = int(cell / patch_size);
     int c = int(cell % patch_size);
 

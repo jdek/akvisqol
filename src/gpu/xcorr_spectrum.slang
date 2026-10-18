@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
+import zimt;
+
 // Cross-spectrum of real s1, s2 packed as z = s1 + i·s2: with X = Z[k],
 // Y = conj(Z[-k]), writes S1·conj(S2) = (X + Y)·i·conj(X - Y) / 4.
 [shader("compute")]
@@ -12,7 +14,7 @@ void xcorr_spectrum(
     uniform uint log2_n,
     uniform uint total)
 {
-    uint g = tid.x;
+    uint g = zimt_index(tid);
     if (g >= total) return;
     uint n = 1u << log2_n;
     uint base = (g >> log2_n) << log2_n;

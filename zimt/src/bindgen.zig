@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
-//! Generates Zig kernel bindings from `slangc -reflection-json`.
-//! The Metal reflection also fixes parameter order for CUDA.
+//! Generates Zig kernel bindings from the Metal and SPIR-V reflections of
+//! `slangc -reflection-json`; they must agree.
 const std = @import("std");
 const Value = std.json.Value;
 
@@ -10,12 +10,15 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len < 4 or (args.len - 4) % 2 != 0) {
-        std.log.err("usage: zimt-bindgen <out.zig> <metal:0|1> <ptx:0|1> (<entry> <reflection.json>)...", .{});
+    if (args.len < 5 or (args.len - 5) % 3 != 0) {
+        std.log.err("usage: zimt-bindgen <out.zig> <metal:0|1> <ptx:0|1> <spirv:0|1> (<entry> <metal.json> <spirv.json>)...", .{});
         std.process.exit(2);
     }
-    const metal = std.mem.eql(u8, args[2], "1");
-    const ptx = std.mem.eql(u8, args[3], "1");
+    const embed: Embed = .{
+        .metal = std.mem.eql(u8, args[2], "1"),
+        .ptx = std.mem.eql(u8, args[3], "1"),
+        .spirv = std.mem.eql(u8, args[4], "1"),
+    };
 
     var out: std.Io.Writer.Allocating = .init(arena);
     const w = &out.writer;
@@ -24,20 +27,25 @@ pub fn main(init: std.process.Init) !void {
         \\const zimt = @import("zimt");
         \\
     );
-    var i: usize = 4;
-    while (i < args.len) : (i += 2) {
+    var i: usize = 5;
+    while (i < args.len) : (i += 3) {
         const entry = args[i];
-        const text = try std.Io.Dir.cwd().readFileAlloc(io, args[i + 1], arena, .limited(16 * 1024 * 1024));
-        const doc = try std.json.parseFromSliceLeaky(Value, arena, text, .{});
-        emit(w, doc, entry, metal, ptx) catch |e| {
-            std.log.err("{s} ({s}): {t}", .{ entry, args[i + 1], e });
+        var docs: [2]Value = undefined;
+        for (&docs, args[i + 1 ..][0..2]) |*doc, path| {
+            const text = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 * 1024 * 1024));
+            doc.* = try std.json.parseFromSliceLeaky(Value, arena, text, .{});
+        }
+        emit(w, docs[0], docs[1], entry, embed) catch |e| {
+            std.log.err("{s} ({s}, {s}): {t}", .{ entry, args[i + 1], args[i + 2], e });
             std.process.exit(1);
         };
     }
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args[1], .data = out.written() });
 }
 
-const Unsupported = error{ MissingEntryPoint, UnsupportedParameter, BadReflection };
+const Embed = struct { metal: bool, ptx: bool, spirv: bool };
+
+const Unsupported = error{ MissingEntryPoint, UnsupportedParameter, BadReflection, ReflectionMismatch };
 
 fn get(v: Value, key: []const u8) Unsupported!Value {
     if (v != .object) return error.BadReflection;
@@ -81,12 +89,69 @@ fn element(t: Value, buf: []u8) (Unsupported || error{NoSpaceLeft})!struct { sla
     return error.UnsupportedParameter;
 }
 
-fn emit(w: *std.Io.Writer, doc: Value, entry: []const u8, metal: bool, ptx: bool) !void {
+fn entryPoint(doc: Value, entry: []const u8) Unsupported!Value {
     const eps = try get(doc, "entryPoints");
     if (eps != .array) return error.BadReflection;
-    const ep = for (eps.array.items) |e| {
-        if (std.mem.eql(u8, try str(try get(e, "name")), entry)) break e;
-    } else return error.MissingEntryPoint;
+    for (eps.array.items) |e| {
+        if (std.mem.eql(u8, try str(try get(e, "name")), entry)) return e;
+    }
+    // A specialized generic entry point keeps its own name.
+    if (eps.array.items.len == 1) return eps.array.items[0];
+    return error.MissingEntryPoint;
+}
+
+/// Skips system values (SV_DispatchThreadID etc.).
+fn userParams(ep: Value, out: []Value) Unsupported![]Value {
+    const params = try get(ep, "parameters");
+    if (params != .array) return error.BadReflection;
+    var n: usize = 0;
+    for (params.array.items) |p| {
+        if (optStr(p, "semanticName") != null) continue;
+        if (n == out.len) return error.UnsupportedParameter;
+        out[n] = p;
+        n += 1;
+    }
+    return out[0..n];
+}
+
+fn isResource(p: Value) Unsupported!bool {
+    return std.mem.eql(u8, try str(try get(try get(p, "type"), "kind")), "resource");
+}
+
+fn checkSpirv(metal_ep: Value, spirv_ep: Value, metal_params: []const Value, spirv_params: []const Value) Unsupported!void {
+    if (metal_params.len != spirv_params.len) return error.ReflectionMismatch;
+    const tm = try get(metal_ep, "threadGroupSize");
+    const ts = try get(spirv_ep, "threadGroupSize");
+    if (tm != .array or ts != .array or tm.array.items.len != 3 or ts.array.items.len != 3) return error.BadReflection;
+    for (tm.array.items, ts.array.items) |a, b| if (try int(a) != try int(b)) return error.ReflectionMismatch;
+    var uniforms = false;
+    for (metal_params, spirv_params) |m, v| {
+        if (!std.mem.eql(u8, try str(try get(m, "name")), try str(try get(v, "name")))) return error.ReflectionMismatch;
+        if (try isResource(m) != try isResource(v)) return error.ReflectionMismatch;
+        const mb = try get(m, "binding");
+        const vb = try get(v, "binding");
+        if (try isResource(m)) {
+            if (!std.mem.eql(u8, try str(try get(vb, "kind")), "descriptorTableSlot")) return error.ReflectionMismatch;
+        } else {
+            uniforms = true;
+            if (try int(try get(mb, "offset")) != try int(try get(vb, "offset")) or
+                try int(try get(mb, "size")) != try int(try get(vb, "size"))) return error.ReflectionMismatch;
+        }
+    }
+    if (uniforms) {
+        const kind = try str(try get(try get(try get(spirv_ep, "scope"), "binding"), "kind"));
+        if (!std.mem.eql(u8, kind, "pushConstantBuffer")) return error.ReflectionMismatch;
+    }
+}
+
+fn emit(w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, entry: []const u8, embed: Embed) !void {
+    const ep = try entryPoint(metal_doc, entry);
+    const vk_ep = try entryPoint(spirv_doc, entry);
+    var metal_buf: [64]Value = undefined;
+    var spirv_buf: [64]Value = undefined;
+    const params = try userParams(ep, &metal_buf);
+    const vk_params = try userParams(vk_ep, &spirv_buf);
+    try checkSpirv(ep, vk_ep, params, vk_params);
 
     const tg = try get(ep, "threadGroupSize");
     if (tg != .array or tg.array.items.len != 3) return error.BadReflection;
@@ -99,24 +164,20 @@ fn emit(w: *std.Io.Writer, doc: Value, entry: []const u8, metal: bool, ptx: bool
         uniform_index = try int(try get(try get(scope, "binding"), "index"));
     };
 
-    const params = try get(ep, "parameters");
-    if (params != .array) return error.BadReflection;
-
     try w.print("\npub const {s} = struct {{\n", .{entry});
     try w.print("    pub const name = \"{s}\";\n", .{entry});
+    try w.print("    pub const symbol = \"{s}\";\n", .{try str(try get(ep, "name"))});
     try w.print("    pub const threads: [3]u32 = .{{ {d}, {d}, {d} }};\n", .{ threads[0], threads[1], threads[2] });
-    if (metal) {
-        try w.print("    pub const metal: []const u8 = @embedFile(\"{s}.metallib\");\n", .{entry});
-    } else try w.writeAll("    pub const metal: []const u8 = \"\";\n");
-    if (ptx) {
-        try w.print("    pub const ptx: []const u8 = @embedFile(\"{s}.ptx\");\n", .{entry});
-    } else try w.writeAll("    pub const ptx: []const u8 = \"\";\n");
+    inline for (.{ .{ "metal", "metallib" }, .{ "ptx", "ptx" }, .{ "spirv", "spv" } }) |c| {
+        if (@field(embed, c[0])) {
+            try w.print("    pub const " ++ c[0] ++ ": []const u8 = @embedFile(\"{s}." ++ c[1] ++ "\");\n", .{entry});
+        } else try w.writeAll("    pub const " ++ c[0] ++ ": []const u8 = \"\";\n");
+    }
     try w.print("    pub const uniform_index = {d};\n", .{uniform_index});
 
     var uniform_size: u32 = 0;
     try w.writeAll("    pub const Args = struct {\n");
-    for (params.array.items) |p| {
-        if (optStr(p, "semanticName") != null) continue; // SV_DispatchThreadID etc.
+    for (params) |p| {
         const pname = try str(try get(p, "name"));
         const t = try get(p, "type");
         const kind = try str(try get(t, "kind"));
@@ -138,8 +199,7 @@ fn emit(w: *std.Io.Writer, doc: Value, entry: []const u8, metal: bool, ptx: bool
     try w.print("    pub const uniform_size = {d};\n", .{uniform_size});
 
     try w.writeAll("    pub const params = [_]zimt.Param{\n");
-    for (params.array.items) |p| {
-        if (optStr(p, "semanticName") != null) continue;
+    for (params, vk_params) |p, vp| {
         const pname = try str(try get(p, "name"));
         const t = try get(p, "type");
         const b = try get(p, "binding");
@@ -150,7 +210,9 @@ fn emit(w: *std.Io.Writer, doc: Value, entry: []const u8, metal: bool, ptx: bool
                 (if (std.mem.eql(u8, a, "readWrite")) "read_write" else if (std.mem.eql(u8, a, "write")) "write" else if (std.mem.eql(u8, a, "read")) "read" else return error.UnsupportedParameter)
             else
                 "read";
-            try w.print("        .{{ .name = \"{s}\", .binding = .{{ .buffer = .{{ .index = {d}, .access = .{s}, .elem_size = {d} }} }} }},\n", .{ pname, try int(try get(b, "index")), access, el.size });
+            try w.print("        .{{ .name = \"{s}\", .binding = .{{ .buffer = .{{ .metal_index = {d}, .vk_binding = {d}, .access = .{s}, .elem_size = {d} }} }} }},\n", .{
+                pname, try int(try get(b, "index")), try int(try get(try get(vp, "binding"), "index")), access, el.size,
+            });
         } else {
             try w.print("        .{{ .name = \"{s}\", .binding = .{{ .uniform = .{{ .offset = {d}, .size = {d} }} }} }},\n", .{ pname, try int(try get(b, "offset")), try int(try get(b, "size")) });
         }

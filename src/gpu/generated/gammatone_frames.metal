@@ -2,6 +2,11 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+uint zimt_index_0(uint3 tid_0)
+{
+    return tid_0.x + tid_0.y * 2097152U;
+}
+
 struct EntryPointParams_0
 {
     uint num_frames_0;
@@ -20,7 +25,7 @@ struct KernelContext_0
     float device* entryPointParams_out_0;
 };
 
-[[kernel]] void gammatone_frames(uint3 tid_0 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], float device* entryPointParams_signals_1 [[buffer(1)]], uint device* entryPointParams_frames_1 [[buffer(2)]], float device* entryPointParams_coeffs_1 [[buffer(3)]], float device* entryPointParams_coeffs2_1 [[buffer(4)]], float device* entryPointParams_hann_1 [[buffer(5)]], float device* entryPointParams_out_1 [[buffer(6)]])
+[[kernel]] void gammatone_frames(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], float device* entryPointParams_signals_1 [[buffer(1)]], uint device* entryPointParams_frames_1 [[buffer(2)]], float device* entryPointParams_coeffs_1 [[buffer(3)]], float device* entryPointParams_coeffs2_1 [[buffer(4)]], float device* entryPointParams_hann_1 [[buffer(5)]], float device* entryPointParams_out_1 [[buffer(6)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
@@ -30,7 +35,7 @@ struct KernelContext_0
     (&kernelContext_0)->entryPointParams_coeffs2_0 = entryPointParams_coeffs2_1;
     (&kernelContext_0)->entryPointParams_hann_0 = entryPointParams_hann_1;
     (&kernelContext_0)->entryPointParams_out_0 = entryPointParams_out_1;
-    uint gid_0 = tid_0.x;
+    uint gid_0 = zimt_index_0(tid_1);
     uint band_0 = gid_0 % entryPointParams_1->num_bands_0;
     uint frame_0 = gid_0 / entryPointParams_1->num_bands_0;
     if(frame_0 >= ((&kernelContext_0)->entryPointParams_0->num_frames_0))

@@ -1,7 +1,10 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
+import zimt;
+
 // y = a*x + y over the first n elements.
+
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void saxpy(
@@ -11,7 +14,7 @@ void saxpy(
     uniform float a,
     uniform uint n)
 {
-    uint i = tid.x;
+    uint i = zimt_index(tid);
     if (i >= n) return;
     y[i] = a * x[i] + y[i];
 }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
-//! Compute runtime for Slang kernels on Metal and CUDA. Kernel bindings are
+//! Compute runtime for Slang kernels on Metal, CUDA and Vulkan. Kernel bindings are
 //! generated from Slang reflection; argument layout is resolved at comptime.
 //!
 //! Dispatches run in submission order, each seeing the previous one's writes.
@@ -11,8 +11,9 @@ const options = @import("zimt_options");
 
 pub const metal = if (options.metal) @import("metal.zig") else struct {};
 pub const cuda = if (options.cuda) @import("cuda.zig") else struct {};
+pub const vulkan = if (options.vulkan) @import("vulkan.zig") else struct {};
 
-pub const Backend = enum { metal, cuda };
+pub const Backend = enum { metal, cuda, vulkan };
 
 pub const Error = error{ BackendUnavailable, DeviceError, KernelNotFound, OutOfMemory };
 
@@ -20,29 +21,35 @@ pub fn compiledIn(b: Backend) bool {
     return switch (b) {
         .metal => options.metal,
         .cuda => options.cuda,
+        .vulkan => options.vulkan,
     };
 }
 
 /// The only compiled-in backend, if there is exactly one.
-const only: ?Backend = if (options.metal and !options.cuda)
-    .metal
-else if (options.cuda and !options.metal)
-    .cuda
-else
-    null;
+const only: ?Backend = blk: {
+    var one: ?Backend = null;
+    for (std.enums.values(Backend)) |b| if (compiledIn(b)) {
+        if (one != null) break :blk null;
+        one = b;
+    };
+    break :blk one;
+};
 
 fn impl(comptime b: Backend) type {
     return switch (b) {
         .metal => metal,
         .cuda => cuda,
+        .vulkan => vulkan,
     };
 }
 
 pub const Buffer = struct {
-    /// Metal: retained `id<MTLBuffer>`; CUDA: `CUdeviceptr`.
+    /// Metal: retained `id<MTLBuffer>`; CUDA: `CUdeviceptr`; Vulkan: a
+    /// backend record (buffer, memory, mapping).
     handle: usize,
     size: usize,
-    /// Host mapping for Metal shared storage; null on CUDA.
+    /// Host mapping for Metal shared storage and host-visible Vulkan memory;
+    /// null on CUDA and for Vulkan device-local memory.
     host: ?[*]u8 = null,
 };
 
@@ -52,15 +59,15 @@ pub const Access = enum { read, write, read_write };
 pub const Param = struct {
     name: []const u8,
     binding: union(enum) {
-        /// `index`: Metal buffer index; `elem_size`: stride in bytes.
-        /// `access` is unused by Metal and CUDA.
-        buffer: struct { index: u32, access: Access, elem_size: u32 },
+        /// `access` orders Vulkan commands; `stride` must match the `Args`
+        /// field's element (`checkDef`).
+        buffer: struct { metal_index: u32, vk_binding: u32, access: Access, elem_size: u32 },
         uniform: struct { offset: u32, size: u32 },
     },
 };
 
 fn checkDef(comptime K: type) void {
-    inline for (.{ "name", "threads", "metal", "ptx", "Args", "params", "uniform_size", "uniform_index" }) |decl| {
+    inline for (.{ "name", "symbol", "threads", "metal", "ptx", "spirv", "Args", "params", "uniform_size", "uniform_index" }) |decl| {
         if (!@hasDecl(K, decl)) @compileError(@typeName(K) ++ " is not a zimt kernel (missing `" ++ decl ++ "`)");
     }
 }
@@ -69,16 +76,21 @@ pub fn Kernel(comptime K: type) type {
     comptime checkDef(K);
     return struct {
         pub const Def = K;
-        /// Metal: retained `id<MTLComputePipelineState>`; CUDA: `CUfunction`.
+        /// Metal: retained `id<MTLComputePipelineState>`; CUDA: `CUfunction`;
+        /// Vulkan: a backend record (pipeline and layouts).
         handle: usize,
         module: usize,
     };
 }
 
+/// `ZIMT_ROW_GROUPS` in zimt.slang; within Vulkan's guaranteed 65535.
+pub const row_groups: u32 = 32768;
+
 /// A point on the device's submission timeline.
 pub const Fence = struct { value: u64 };
 
-/// `handle`: retained `id<MTLCommandBuffer>` on Metal, `CUevent` on CUDA.
+/// `handle`: retained `id<MTLCommandBuffer>` on Metal, `CUevent` on CUDA,
+/// a command buffer and timeline value on Vulkan.
 const Pending = struct { value: u64, handle: usize };
 
 pub const Device = struct {
@@ -140,7 +152,7 @@ pub const Device = struct {
         }
     }
 
-    const code_decl = std.EnumArray(Backend, enum { metal, ptx }).init(.{ .metal = .metal, .cuda = .ptx });
+    const code_decl = std.EnumArray(Backend, enum { metal, ptx, spirv }).init(.{ .metal = .metal, .cuda = .ptx, .vulkan = .spirv });
 
     pub fn release(self: *Device, k: anytype) void {
         switch (self.which()) {
@@ -200,10 +212,13 @@ pub const Device = struct {
         self.dirty = true;
     }
 
+    /// Folds into rows of `row_groups` groups; kernels index with `zimt_index`.
     pub fn dispatch1d(self: *Device, k: anytype, n: usize, args: @TypeOf(k).Def.Args) !void {
         const tx = @TypeOf(k).Def.threads[0];
-        const g: u32 = @intCast(std.math.divCeil(usize, n, tx) catch unreachable);
-        return self.dispatch(k, .{ g, 1, 1 }, args);
+        const g = std.math.divCeil(usize, n, tx) catch unreachable;
+        if (g <= row_groups) return self.dispatch(k, .{ @intCast(g), 1, 1 }, args);
+        const rows = std.math.divCeil(usize, g, row_groups) catch unreachable;
+        return self.dispatch(k, .{ row_groups, std.math.cast(u32, rows) orelse return Error.DeviceError, 1 }, args);
     }
 
     /// Non-blocking. Returns the latest fence if nothing new was enqueued.

@@ -55,7 +55,7 @@ pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(
     };
     errdefer zimt_metal_release(lib);
     var max_threads: u32 = 0;
-    const ps = zimt_metal_pipeline_new(bridge(d), lib, K.name, &max_threads, &err, err.len) orelse {
+    const ps = zimt_metal_pipeline_new(bridge(d), lib, K.symbol, &max_threads, &err, err.len) orelse {
         std.log.err("zimt/metal: kernel '{s}': {s}", .{ K.name, std.mem.sliceTo(&err, 0) });
         return zimt.Error.KernelNotFound;
     };
@@ -105,7 +105,7 @@ pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: [3]u32
         var i: usize = 0;
         for (K.params) |p| switch (p.binding) {
             .buffer => |b| {
-                idx[i] = b.index;
+                idx[i] = b.metal_index;
                 i += 1;
             },
             .uniform => {},

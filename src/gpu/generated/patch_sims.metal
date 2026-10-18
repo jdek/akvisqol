@@ -2,6 +2,11 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+uint zimt_index_0(uint3 tid_0)
+{
+    return tid_0.x + tid_0.y * 2097152U;
+}
+
 float wgt_0(int dr_0, int dc_0)
 {
     bool _S1 = dr_0 == int(0);
@@ -68,7 +73,7 @@ struct KernelContext_0
     float device* entryPointParams_out_0;
 };
 
-[[kernel]] void patch_sims(uint3 tid_0 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], float device* entryPointParams_ref_spec_1 [[buffer(1)]], float device* entryPointParams_deg_spec_1 [[buffer(2)]], uint device* entryPointParams_rows_1 [[buffer(3)]], uint device* entryPointParams_out_base_1 [[buffer(4)]], float device* entryPointParams_mu_ref_1 [[buffer(5)]], float device* entryPointParams_srs_ref_1 [[buffer(6)]], float device* entryPointParams_out_1 [[buffer(7)]])
+[[kernel]] void patch_sims(uint3 tid_1 [[thread_position_in_grid]], EntryPointParams_0 constant* entryPointParams_1 [[buffer(0)]], float device* entryPointParams_ref_spec_1 [[buffer(1)]], float device* entryPointParams_deg_spec_1 [[buffer(2)]], uint device* entryPointParams_rows_1 [[buffer(3)]], uint device* entryPointParams_out_base_1 [[buffer(4)]], float device* entryPointParams_mu_ref_1 [[buffer(5)]], float device* entryPointParams_srs_ref_1 [[buffer(6)]], float device* entryPointParams_out_1 [[buffer(7)]])
 {
     thread KernelContext_0 kernelContext_0;
     (&kernelContext_0)->entryPointParams_0 = entryPointParams_1;
@@ -79,7 +84,7 @@ struct KernelContext_0
     (&kernelContext_0)->entryPointParams_mu_ref_0 = entryPointParams_mu_ref_1;
     (&kernelContext_0)->entryPointParams_srs_ref_0 = entryPointParams_srs_ref_1;
     (&kernelContext_0)->entryPointParams_out_0 = entryPointParams_out_1;
-    uint t_0 = tid_0.x;
+    uint t_0 = zimt_index_0(tid_1);
     if(t_0 >= (entryPointParams_1->num_tasks_0))
     {
         return;

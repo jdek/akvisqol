@@ -13,6 +13,7 @@
 // frames:  (num_frames, 3) u32 — signal offset, out index of band 0, band stride.
 // coeffs:  (num_bands, 8) f32 — stage 1 n0, m1, n2; m1 for stages 2-4; c2; e.
 // coeffs2: (num_bands, 2) f32 — n0, n2 for stages 2-4.
+import zimt;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -28,7 +29,7 @@ void gammatone_frames(
     uniform uint num_bands,
     uniform uint window_size)
 {
-    uint gid = tid.x;
+    uint gid = zimt_index(tid);
     uint band = gid % num_bands;
     uint frame = gid / num_bands;
     if (frame >= num_frames) return;

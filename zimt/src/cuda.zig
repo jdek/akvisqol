@@ -65,7 +65,7 @@ pub fn kernel(d: *zimt.Device, comptime K: type, code: []const u8) !zimt.Kernel(
     try call(api.cuModuleLoadData(&m, z.ptr));
     errdefer _ = api.cuModuleUnload(m);
     var f: c.CUfunction = null;
-    if (api.cuModuleGetFunction(&f, m, K.name) != c.CUDA_SUCCESS) return zimt.Error.KernelNotFound;
+    if (api.cuModuleGetFunction(&f, m, K.symbol) != c.CUDA_SUCCESS) return zimt.Error.KernelNotFound;
     return .{ .handle = @intFromPtr(f), .module = @intFromPtr(m) };
 }
 

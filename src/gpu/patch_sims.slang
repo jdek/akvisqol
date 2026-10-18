@@ -8,6 +8,7 @@
 // rows: (num_rows, 8) u32 — task_base, count, lo, ref_base, nf_ref, ref_col,
 //       deg_base, nf_deg.
 import nsim_common;
+import zimt;
 
 float degAt(StructuredBuffer<float> deg, uint base, uint nf, int band, int col)
 {
@@ -30,7 +31,7 @@ void patch_sims(
     uniform uint num_bands,
     uniform uint patch_size)
 {
-    uint t = tid.x;
+    uint t = zimt_index(tid);
     if (t >= num_tasks) return;
 
     uint lo_r = 0, hi_r = num_rows - 1;

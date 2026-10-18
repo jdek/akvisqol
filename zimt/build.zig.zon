@@ -7,6 +7,12 @@
     .fingerprint = 0xe5fbcf84f9cd616a,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
+        // translate-c input for the Vulkan backend; fetched only with -Dvulkan.
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.357.tar.gz",
+            .hash = "N-V-__8AAO2WewIbm0OeFBxoD5LxmEzZigF1yXmgGLuahMD5",
+            .lazy = true,
+        },
         // translate-c input for the CUDA backend (cuda.h, cudaTypedefs.h, from
         // NVIDIA's redistributable cudart); fetched only with -Dcuda.
         .cuda_headers = .{

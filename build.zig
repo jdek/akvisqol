@@ -26,14 +26,15 @@ pub fn build(b: *std.Build) void {
         .zimt = zimt_dep,
         .sources = b.path("src/gpu"),
         .generated = b.path("src/gpu/generated"),
-        .entries = &kernel_names,
+        .entries = &kernels,
         .metal = enable_metal,
         .cuda = enable_cuda,
     });
-    b.step("shaders", "Regenerate src/gpu/generated/ (MSL + reflection) from the Slang sources (needs slangc)").dependOn(zimt.addRegenerate(b, .{
+    b.step("shaders", "Regenerate src/gpu/generated/ (MSL, SPIR-V + reflection) from the Slang sources (needs slangc, spirv-val)").dependOn(zimt.addRegenerate(b, .{
+        .zimt = zimt_dep,
         .sources = b.path("src/gpu"),
         .generated_dir = "src/gpu/generated",
-        .entries = &kernel_names,
+        .entries = &kernels,
     }));
 
     const options = b.addOptions();
@@ -138,5 +139,12 @@ fn sharedName(os: std.Target.Os.Tag) []const u8 {
     };
 }
 
-/// One per `src/gpu/<name>.slang`.
-const kernel_names = [_][]const u8{ "gammatone_frames", "ref_stats", "patch_sims", "fft_radix2", "fft_radix4", "fft_radix16", "xcorr_spectrum" };
+const kernels = [_]zimt.Entry{
+    .{ .name = "gammatone_frames" },
+    .{ .name = "ref_stats" },
+    .{ .name = "patch_sims" },
+    .{ .name = "fft_radix2" },
+    .{ .name = "fft_radix4" },
+    .{ .name = "fft_radix16" },
+    .{ .name = "xcorr_spectrum" },
+};

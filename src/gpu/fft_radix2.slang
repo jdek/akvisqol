@@ -3,6 +3,7 @@
 
 // Radix-2 Stockham pass (see fft_radix4.slang), only when log2(n) is odd.
 import fft_common;
+import zimt;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -16,7 +17,7 @@ void fft_radix2(
     uniform uint total,
     uniform float sign)
 {
-    uint g = tid.x;
+    uint g = zimt_index(tid);
     if (g >= total) return;
     uint n = 1u << log2_n;
     uint h = n >> 1;
