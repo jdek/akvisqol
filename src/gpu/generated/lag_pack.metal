@@ -12,12 +12,33 @@ float RO_operatorx5Bx5D_get_0(const RO_0 constant* this_0, uint i_0)
     return *(this_0->p_0 + i_0);
 }
 
-struct RO_1
+struct Side_0
 {
-    uint device* p_0;
+    uint start_0;
+    uint pad_0;
+    uint len_0;
 };
 
-uint RO_operatorx5Bx5D_get_1(const RO_1 constant* this_1, uint i_1)
+struct LagRow_0
+{
+    Side_0 a_0;
+    Side_0 b_0;
+    uint first_slot_0;
+    uint slots_0;
+    uint a_base_0;
+    uint b_base_0;
+    uint a_grid_0;
+    uint b_grid_0;
+    uint a_raw_0;
+    uint b_raw_0;
+};
+
+struct RO_1
+{
+    LagRow_0 device* p_0;
+};
+
+LagRow_0 RO_operatorx5Bx5D_get_1(const RO_1 constant* this_1, uint i_1)
 {
     return *(this_1->p_0 + i_1);
 }
@@ -35,7 +56,7 @@ struct RW_0
 struct EntryPointParams_0
 {
     RO_0 signals_0;
-    RO_1 jobs_0;
+    RO_1 rows_0;
     RW_0 z_0;
     uint log2_n_0;
     uint total_0;
@@ -56,33 +77,31 @@ struct KernelContext_0
     {
         return;
     }
+    uint row_0 = g_0 >> ((&kernelContext_0)->entryPointParams_0->log2_n_0);
     uint t_0 = g_0 & ((1U << ((&kernelContext_0)->entryPointParams_0->log2_n_0)) - 1U);
-    uint _S2 = (g_0 >> ((&kernelContext_0)->entryPointParams_0->log2_n_0)) * 4U;
-    uint _S3 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->jobs_0, _S2);
-    uint _S4 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->jobs_0, _S2 + 2U);
-    uint _S5 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->jobs_0, _S2 + 1U);
-    float _S6;
-    if(t_0 < _S5)
+    LagRow_0 _S2 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, row_0);
+    LagRow_0 _S3 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, row_0);
+    float _S4;
+    if(t_0 < (_S2.a_0.len_0))
     {
-        float _S7 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->signals_0, _S3 + t_0);
+        float _S5 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->signals_0, _S2.a_0.start_0 + t_0);
+        _S4 = _S5;
+    }
+    else
+    {
+        _S4 = 0.0f;
+    }
+    float _S6;
+    if(t_0 < (_S3.b_0.len_0))
+    {
+        float _S7 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->signals_0, _S3.b_0.start_0 + t_0);
         _S6 = _S7;
     }
     else
     {
         _S6 = 0.0f;
     }
-    uint _S8 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->jobs_0, _S2 + 3U);
-    float _S9;
-    if(t_0 < _S8)
-    {
-        float _S10 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->signals_0, _S4 + t_0);
-        _S9 = _S10;
-    }
-    else
-    {
-        _S9 = 0.0f;
-    }
-    *(_S1.p_1 + g_0) = packed_float2(float2(_S6, _S9)) ;
+    *(_S1.p_1 + g_0) = packed_float2(float2(_S4, _S6)) ;
     return;
 }
 

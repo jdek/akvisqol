@@ -209,6 +209,46 @@ pub fn truncateAligned(
     };
 }
 
+/// `truncateAligned` without the copies: `ref_out[i] = ref[ref_off + i]`
+/// and `deg_out[i] = deg[deg_off + i]` (zero outside `deg`), `len` long.
+pub const Geometry = struct {
+    len: usize,
+    ref_off: usize,
+    deg_off: i64,
+    lag_seconds: f64,
+};
+
+/// `lag` samples to seconds and back, truncating: lag - 1 for some lags
+/// (27 at 48 kHz), which upstream's head trim keeps.
+pub fn lagSamplesBack(lag: i64, sample_rate: u32) i64 {
+    const sr_f: f64 = @floatFromInt(sample_rate);
+    const seconds: f64 = @as(f64, @floatFromInt(lag)) / sr_f;
+    return @intFromFloat(seconds * sr_f);
+}
+
+pub fn trimGeometry(ref_len: usize, deg_len: usize, lag: i64, sample_rate: u32) Geometry {
+    const r: i64 = @intCast(ref_len);
+    const d: i64 = @intCast(deg_len);
+    // applyLag
+    const shift: i64 = if (lag == 0 or @abs(lag) > ref_len / 2) 0 else lag;
+    const dl = if (shift < 0) d - @min(-shift, d) else d + shift;
+    var head: i64 = 0;
+    var len = r;
+    if (r > dl) {
+        len = dl;
+    } else if (r < dl and shift > 0) {
+        head = @max(lagSamplesBack(shift, sample_rate), 0);
+        len = r - head;
+    }
+    const sr_f: f64 = @floatFromInt(sample_rate);
+    return .{
+        .len = @intCast(len),
+        .ref_off = @intCast(head),
+        .deg_off = head - shift,
+        .lag_seconds = if (shift == 0) 0.0 else @as(f64, @floatFromInt(shift)) / sr_f,
+    };
+}
+
 /// Full-signal linear gammatone spectrograms, row-major `[bands][nf]`.
 pub const RawSpectrograms = struct {
     ref: []const f64,
@@ -218,8 +258,8 @@ pub const RawSpectrograms = struct {
 
     /// Copy `nf_local` columns for a patch starting at `slice[off]` (slice
     /// layout `l`) if its frames land on the global grid; false otherwise.
-    fn reuse(
-        _: RawSpectrograms,
+    /// gammatone_patches.slang skips the same frames.
+    pub fn reuse(
         num_bands: usize,
         global: []const f64,
         nf_global: usize,
@@ -241,96 +281,76 @@ pub const RawSpectrograms = struct {
     }
 };
 
-pub const RealignJob = struct {
-    match_index: usize,
-    trimmed: Trimmed,
-    nf_ref: usize,
-    nf_deg: usize,
-    ref_spec: []f64,
-    deg_spec: []f64,
-};
+/// `sliceAudio` of a view.
+pub fn sliceView(allocator: std.mem.Allocator, v: accel.View) ![]f64 {
+    const out = try allocator.alloc(f64, v.layout.pad + v.layout.len);
+    @memset(out[0..v.layout.pad], 0.0);
+    @memcpy(out[v.layout.pad..], v.signal[v.layout.base..][0..v.layout.len]);
+    return out;
+}
 
-pub const RealignPrep = struct {
-    jobs: std.ArrayList(RealignJob) = .empty,
+/// The CPU realignment of `job`: envelope lag, trim, then spectrograms,
+/// copying grid-aligned frames from `job.raw`.
+pub fn realignCpu(
     allocator: std.mem.Allocator,
-
-    pub fn deinit(self: *RealignPrep) void {
-        for (self.jobs.items) |*j| {
-            j.trimmed.deinit();
-            self.allocator.free(j.ref_spec);
-            self.allocator.free(j.deg_spec);
-        }
-        self.jobs.deinit(self.allocator);
+    cache: *xcorr.Cache,
+    params: accel.SpecParams,
+    sample_rate: u32,
+    job: accel.RealignJob,
+    frame_buf: gammatone.FrameBuf,
+) !void {
+    const ref_audio = try sliceView(allocator, job.ref);
+    defer allocator.free(ref_audio);
+    const deg_audio = try sliceView(allocator, job.deg);
+    defer allocator.free(deg_audio);
+    {
+        const env = try alignmentEnvelopes(allocator, ref_audio, deg_audio);
+        defer allocator.free(env.ref);
+        defer allocator.free(env.deg);
+        job.out.lag = try xcorr.bestLagCached(cache, env.ref, env.deg);
     }
-};
+    var trimmed = try truncateAligned(allocator, ref_audio, deg_audio, job.out.lag, sample_rate);
+    defer trimmed.deinit();
+    const nb = params.bands.len;
+    const nf = gammatone.numFrames(trimmed.ref.len, params.window_size, params.hop_size);
+    job.out.num_frames = nf;
+    if (nf == 0) return;
+    const sides = [_]struct { signal: []const f64, layout: SliceLayout, off: i64, out: []f64, raw: ?[]const f64, nf_raw: usize }{
+        .{ .signal = trimmed.ref, .layout = job.ref.layout, .off = @intCast(trimmed.ref_off), .out = job.out.ref_spec, .raw = if (job.raw) |r| r.ref else null, .nf_raw = if (job.raw) |r| r.nf_ref else 0 },
+        .{ .signal = trimmed.deg, .layout = job.deg.layout, .off = trimmed.deg_off, .out = job.out.deg_spec, .raw = if (job.raw) |r| r.deg else null, .nf_raw = if (job.raw) |r| r.nf_deg else 0 },
+    };
+    for (sides) |s| {
+        // Frames on the full-signal grid are bit-identical; reuse them.
+        if (s.raw) |raw| if (RawSpectrograms.reuse(nb, raw, s.nf_raw, s.layout, s.off, params.hop_size, nf, s.out)) continue;
+        _ = try gammatone.buildSpectrogramBands(params.bands, s.signal, params.window_size, params.hop_size, params.hann, frame_buf, s.out);
+    }
+}
 
-pub const PatchLag = struct {
+pub const Patch = struct {
     match_index: usize,
-    ref_audio: []f64,
-    deg_audio: []f64,
-    env: Envelopes,
-    lag: i64 = 0,
+    ref_len: usize,
+    deg_len: usize,
+    out: accel.RealignOut,
 };
 
 pub const RealignPlan = struct {
-    patches: std.ArrayList(PatchLag) = .empty,
+    patches: std.ArrayList(Patch) = .empty,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *RealignPlan) void {
         for (self.patches.items) |p| {
-            self.allocator.free(p.ref_audio);
-            self.allocator.free(p.deg_audio);
-            self.allocator.free(p.env.ref);
-            self.allocator.free(p.env.deg);
+            self.allocator.free(p.out.ref_spec);
+            self.allocator.free(p.out.deg_spec);
         }
         self.patches.deinit(self.allocator);
     }
 };
 
-/// Queues each valid match's envelope lag search in `lag_jobs`, which point
-/// into the returned plan, so batches across pairs reach the accelerator.
+/// Queues each valid match's realignment in `jobs`, which point into the
+/// returned plan, so batches across pairs reach the accelerator.
 pub fn planRealign(
-    allocator: std.mem.Allocator,
-    matches: *const dp.Matches,
-    ref_signal: []const f64,
-    deg_signal: []const f64,
-    sample_rate: u32,
-    window_size: usize,
-    lag_jobs: *std.ArrayList(accel.LagJob),
-) !RealignPlan {
-    var plan: RealignPlan = .{ .allocator = allocator };
-    errdefer plan.deinit();
-    // No reallocation: the lag jobs point in.
-    try plan.patches.ensureTotalCapacity(allocator, matches.items.len);
-    for (matches.items, 0..) |*m, mi| {
-        if (!m.valid) continue;
-        const ref_audio = try sliceAudio(allocator, ref_signal, sample_rate, m.ref_patch_start_time, m.ref_patch_end_time);
-        errdefer allocator.free(ref_audio);
-        const deg_audio = try sliceAudio(allocator, deg_signal, sample_rate, m.deg_patch_start_time, m.deg_patch_end_time);
-        errdefer allocator.free(deg_audio);
-        if (ref_audio.len < window_size or deg_audio.len < window_size) {
-            allocator.free(ref_audio);
-            allocator.free(deg_audio);
-            continue;
-        }
-        const env = alignmentEnvelopes(allocator, ref_audio, deg_audio) catch {
-            allocator.free(ref_audio);
-            allocator.free(deg_audio);
-            continue;
-        };
-        plan.patches.appendAssumeCapacity(.{ .match_index = mi, .ref_audio = ref_audio, .deg_audio = deg_audio, .env = env });
-    }
-    try lag_jobs.ensureUnusedCapacity(allocator, plan.patches.items.len);
-    for (plan.patches.items) |*p| lag_jobs.appendAssumeCapacity(.{ .a = p.env.ref, .b = p.env.deg, .out = &p.lag });
-    return plan;
-}
-
-/// Reuses grid-aligned frames from `raw` or queues a job in `spec_jobs`;
-/// jobs point into the returned `RealignPrep`.
-pub fn prepareRealign(
     num_bands: usize,
     allocator: std.mem.Allocator,
-    plan: *const RealignPlan,
     matches: *const dp.Matches,
     ref_signal: []const f64,
     deg_signal: []const f64,
@@ -338,66 +358,47 @@ pub fn prepareRealign(
     window_size: usize,
     hop_size: usize,
     raw: ?RawSpectrograms,
-    spec_jobs: *std.ArrayList(accel.SpecJob),
-) !RealignPrep {
-    var prep: RealignPrep = .{ .allocator = allocator };
-    errdefer prep.deinit();
-
-    for (plan.patches.items) |p| {
-        const mi = p.match_index;
-        const m = &matches.items[mi];
-        const ref_layout = sliceLayout(ref_signal.len, sample_rate, m.ref_patch_start_time, m.ref_patch_end_time);
-        const deg_layout = sliceLayout(deg_signal.len, sample_rate, m.deg_patch_start_time, m.deg_patch_end_time);
-
-        var trimmed = truncateAligned(allocator, p.ref_audio, p.deg_audio, p.lag, sample_rate) catch continue;
-        if (trimmed.ref.len < window_size) {
-            trimmed.deinit();
-            continue;
-        }
-        const nf_ref = gammatone.numFrames(trimmed.ref.len, window_size, hop_size);
-        const nf_deg = gammatone.numFrames(trimmed.deg.len, window_size, hop_size);
-        if (nf_ref == 0 or nf_deg == 0) {
-            trimmed.deinit();
-            continue;
-        }
-        const ref_spec = allocator.alloc(f64, num_bands * nf_ref) catch |e| {
-            trimmed.deinit();
-            return e;
-        };
-        const deg_spec = allocator.alloc(f64, num_bands * nf_deg) catch |e| {
-            trimmed.deinit();
-            allocator.free(ref_spec);
-            return e;
-        };
-        prep.jobs.append(allocator, .{
+    jobs: *std.ArrayList(accel.RealignJob),
+) !RealignPlan {
+    var plan: RealignPlan = .{ .allocator = allocator };
+    errdefer plan.deinit();
+    // Reserved up front: jobs point into `plan.patches`.
+    try plan.patches.ensureTotalCapacity(allocator, matches.items.len);
+    try jobs.ensureUnusedCapacity(allocator, matches.items.len);
+    for (matches.items, 0..) |*m, mi| {
+        if (!m.valid) continue;
+        const rl = sliceLayout(ref_signal.len, sample_rate, m.ref_patch_start_time, m.ref_patch_end_time);
+        const dl = sliceLayout(deg_signal.len, sample_rate, m.deg_patch_start_time, m.deg_patch_end_time);
+        const ref_len = rl.pad + rl.len;
+        const deg_len = dl.pad + dl.len;
+        if (ref_len < window_size or deg_len < window_size) continue;
+        // Trimming keeps at most the reference.
+        const max_frames = gammatone.numFrames(ref_len, window_size, hop_size);
+        const ref_spec = try allocator.alloc(f64, num_bands * max_frames);
+        errdefer allocator.free(ref_spec);
+        const deg_spec = try allocator.alloc(f64, num_bands * max_frames);
+        plan.patches.appendAssumeCapacity(.{
             .match_index = mi,
-            .trimmed = trimmed,
-            .nf_ref = nf_ref,
-            .nf_deg = nf_deg,
-            .ref_spec = ref_spec,
-            .deg_spec = deg_spec,
-        }) catch |e| {
-            trimmed.deinit();
-            allocator.free(ref_spec);
-            allocator.free(deg_spec);
-            return e;
-        };
-        const job = &prep.jobs.items[prep.jobs.items.len - 1];
-
-        // Frames on the full-signal grid are bit-identical; reuse them.
-        const ref_reused = if (raw) |r| r.reuse(num_bands, r.ref, r.nf_ref, ref_layout, @intCast(trimmed.ref_off), hop_size, nf_ref, ref_spec) else false;
-        const deg_reused = if (raw) |r| r.reuse(num_bands, r.deg, r.nf_deg, deg_layout, trimmed.deg_off, hop_size, nf_deg, deg_spec) else false;
-        if (!ref_reused) try spec_jobs.append(allocator, .{ .signal = job.trimmed.ref, .num_frames = nf_ref, .out = ref_spec });
-        if (!deg_reused) try spec_jobs.append(allocator, .{ .signal = job.trimmed.deg, .num_frames = nf_deg, .out = deg_spec });
+            .ref_len = ref_len,
+            .deg_len = deg_len,
+            .out = .{ .ref_spec = ref_spec, .deg_spec = deg_spec },
+        });
+        const p = &plan.patches.items[plan.patches.items.len - 1];
+        jobs.appendAssumeCapacity(.{
+            .ref = .{ .signal = ref_signal, .layout = rl },
+            .deg = .{ .signal = deg_signal, .layout = dl },
+            .raw = raw,
+            .out = &p.out,
+        });
     }
-    return prep;
+    return plan;
 }
 
-/// Rescore each filled job; keep the realigned result unless strictly worse.
+/// Rescore each realigned patch; keep the result unless strictly worse.
 pub fn finishRealign(
     num_bands: usize,
     allocator: std.mem.Allocator,
-    prep: *RealignPrep,
+    plan: *RealignPlan,
     matches: *dp.Matches,
     sample_rate: u32,
 ) !void {
@@ -405,23 +406,19 @@ pub fn finishRealign(
     var scratch: ?nsim.Scratch = null;
     defer if (scratch) |*sc| sc.deinit();
 
-    for (prep.jobs.items) |*job| {
-        const m = &matches.items[job.match_index];
-        spectrogram.prepareForComparison(job.ref_spec, job.deg_spec, num_bands, job.nf_ref, job.nf_deg);
+    for (plan.patches.items) |*p| {
+        const nf = p.out.num_frames;
+        if (nf == 0) continue;
+        const m = &matches.items[p.match_index];
+        const geo = trimGeometry(p.ref_len, p.deg_len, p.out.lag, sample_rate);
+        const ref_spec = p.out.ref_spec[0 .. num_bands * nf];
+        const deg_spec = p.out.deg_spec[0 .. num_bands * nf];
+        spectrogram.prepareForComparison(ref_spec, deg_spec, num_bands, nf, nf);
 
-        const shared_nf = @min(job.nf_ref, job.nf_deg);
-        if (scratch == null or scratch.?.nrows != num_bands or scratch.?.ncols != shared_nf) {
+        if (scratch == null or scratch.?.nrows != num_bands or scratch.?.ncols != nf) {
             if (scratch) |*sc| sc.deinit();
             scratch = null;
-            scratch = try nsim.Scratch.init(allocator, num_bands, shared_nf);
-        }
-        const ref_slab = try allocator.alloc(f64, num_bands * shared_nf);
-        defer allocator.free(ref_slab);
-        const deg_slab = try allocator.alloc(f64, num_bands * shared_nf);
-        defer allocator.free(deg_slab);
-        for (0..num_bands) |b| {
-            @memcpy(ref_slab[b * shared_nf ..][0..shared_nf], job.ref_spec[b * job.nf_ref ..][0..shared_nf]);
-            @memcpy(deg_slab[b * shared_nf ..][0..shared_nf], job.deg_spec[b * job.nf_deg ..][0..shared_nf]);
+            scratch = try nsim.Scratch.init(allocator, num_bands, nf);
         }
 
         const new_means = try allocator.alloc(f64, num_bands);
@@ -436,7 +433,7 @@ pub fn finishRealign(
             .mean_freq_band_means = 0.0,
             .allocator = allocator,
         };
-        cmp.measurePatchSimilarity(&scratch.?, ref_slab, deg_slab, &ps);
+        cmp.measurePatchSimilarity(&scratch.?, ref_spec, deg_spec, &ps);
 
         if (!(ps.mean_freq_band_means < m.similarity)) {
             allocator.free(m.freq_band_means);
@@ -448,15 +445,14 @@ pub fn finishRealign(
             m.similarity = ps.mean_freq_band_means;
 
             const sr_f: f64 = @floatFromInt(sample_rate);
-            const new_ref_dur: f64 = @as(f64, @floatFromInt(job.trimmed.ref.len)) / sr_f;
-            const new_deg_dur: f64 = @as(f64, @floatFromInt(job.trimmed.deg.len)) / sr_f;
-            if (job.trimmed.lag_seconds > 0.0) {
-                m.ref_patch_start_time += job.trimmed.lag_seconds;
+            const new_dur: f64 = @as(f64, @floatFromInt(geo.len)) / sr_f;
+            if (geo.lag_seconds > 0.0) {
+                m.ref_patch_start_time += geo.lag_seconds;
             } else {
-                m.deg_patch_start_time -= job.trimmed.lag_seconds;
+                m.deg_patch_start_time -= geo.lag_seconds;
             }
-            m.ref_patch_end_time = m.ref_patch_start_time + new_ref_dur;
-            m.deg_patch_end_time = m.deg_patch_start_time + new_deg_dur;
+            m.ref_patch_end_time = m.ref_patch_start_time + new_dur;
+            m.deg_patch_end_time = m.deg_patch_start_time + new_dur;
         } else {
             ps.deinit();
         }
@@ -495,4 +491,39 @@ test "globallyAlign: identical signals → lag 0" {
     const a = try globallyAlign(allocator, &cache, &sig, &sig, 16000);
     defer if (a.deg_owned) allocator.free(a.deg);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), a.lag_seconds, 1e-9);
+}
+
+test "trimGeometry: where truncateAligned takes its samples" {
+    const allocator = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(5);
+    const r = prng.random();
+    for (0..3000) |it| {
+        const sr: u32 = ([_]u32{ 16000, 44100, 48000 })[it % 3];
+        const ref_len = r.intRangeAtMost(usize, 0, 400);
+        const deg_len = r.intRangeAtMost(usize, 0, 400);
+        // Lags past half the reference are ignored; 27 comes back from seconds as 26 at 48 kHz.
+        const lag: i64 = switch (it % 4) {
+            0 => 27,
+            1 => -55,
+            else => r.intRangeAtMost(i64, -@as(i64, @intCast(ref_len)), @intCast(ref_len)),
+        };
+        const ref = try allocator.alloc(f64, ref_len);
+        defer allocator.free(ref);
+        const deg = try allocator.alloc(f64, deg_len);
+        defer allocator.free(deg);
+        for (ref, 0..) |*x, i| x.* = @floatFromInt(i + 1);
+        for (deg, 0..) |*x, i| x.* = -@as(f64, @floatFromInt(i + 1));
+        var t = try truncateAligned(allocator, ref, deg, lag, sr);
+        defer t.deinit();
+        const g = trimGeometry(ref_len, deg_len, lag, sr);
+        try std.testing.expectEqual(t.ref.len, g.len);
+        try std.testing.expectEqual(t.deg.len, g.len);
+        try std.testing.expectEqual(t.lag_seconds, g.lag_seconds);
+        for (t.ref, 0..) |x, i| try std.testing.expectEqual(ref[g.ref_off + i], x);
+        for (t.deg, 0..) |x, i| {
+            const j = g.deg_off + @as(i64, @intCast(i));
+            try std.testing.expectEqual(if (j >= 0 and j < deg_len) deg[@intCast(j)] else 0.0, x);
+        }
+    }
+    try std.testing.expectEqual(@as(i64, 26), lagSamplesBack(27, 48000));
 }

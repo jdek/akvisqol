@@ -1,0 +1,275 @@
+{
+    "version": "1.1",
+    "parameters": [
+
+    ],
+    "globalScope": {
+        "kind": "none",
+        "parameters": [
+
+        ]
+    },
+    "entryPoints": [
+        {
+            "name": "lag_params",
+            "stage": "compute",
+            "scope": {
+                "kind": "constantBuffer",
+                "binding": {"kind": "constantBuffer", "index": 0},
+                "parameters": [
+                    {
+                        "name": "tid",
+                        "semanticName": "SV_DISPATCHTHREADID",
+                        "type": {
+                            "kind": "vector",
+                            "elementCount": 3,
+                            "elementType": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "sizes": [
+
+                            ]
+                        }
+                    },
+                    {
+                        "name": "energy",
+                        "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
+                        "type": {
+                            "kind": "struct",
+                            "name": "RO",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": "float",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "uniform", "value": 8, "alignment": 8}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "params",
+                        "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
+                        "type": {
+                            "kind": "struct",
+                            "name": "RW",
+                            "fields": [
+                                {
+                                    "name": "p",
+                                    "type": {
+                                        "kind": "pointer",
+                                        "valueType": {
+                                            "kind": "struct",
+                                            "name": "LagParams",
+                                            "fields": [
+                                                {
+                                                    "name": "max_lag",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "slack",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "float32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                }
+                                            ],
+                                            "sizes": [
+                                                {"kind": "uniform", "value": 8, "alignment": 4}
+                                            ]
+                                        },
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 8, "alignment": 8}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "uniform", "value": 8, "alignment": 8}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "log2_n",
+                        "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "block",
+                        "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "num_rows",
+                        "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "slack_scale",
+                        "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    }
+                ]
+            },
+            "parameters": [
+                {
+                    "name": "tid",
+                    "semanticName": "SV_DISPATCHTHREADID",
+                    "type": {
+                        "kind": "vector",
+                        "elementCount": 3,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "uint32"
+                        },
+                        "sizes": [
+
+                        ]
+                    }
+                },
+                {
+                    "name": "energy",
+                    "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
+                    "type": {
+                        "kind": "struct",
+                        "name": "RO",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "float",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 8, "alignment": 8}
+                        ]
+                    }
+                },
+                {
+                    "name": "params",
+                    "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
+                    "type": {
+                        "kind": "struct",
+                        "name": "RW",
+                        "fields": [
+                            {
+                                "name": "p",
+                                "type": {
+                                    "kind": "pointer",
+                                    "valueType": "LagParams",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0}
+                            }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 8, "alignment": 8}
+                        ]
+                    }
+                },
+                {
+                    "name": "log2_n",
+                    "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "block",
+                    "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "num_rows",
+                    "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "uint32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "slack_scale",
+                    "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "float32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                }
+            ],
+            "threadGroupSize": [64, 1, 1],
+            "bindings": [
+
+            ]
+        }
+    ],
+    "bindlessSpaceIndex": 1
+}

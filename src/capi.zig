@@ -32,7 +32,7 @@ pub const Options = extern struct {
     use_lattice_model: u8,
     model_path: ?[*:0]const u8,
     backend: u32,
-    _reserved1: u32 = 0,
+    precision: u32 = 0,
 };
 
 pub const Patch = extern struct {
@@ -142,6 +142,7 @@ export fn visqol_options_default(opts: ?*Options) void {
         .use_lattice_model = 1,
         .model_path = null,
         .backend = 0,
+        .precision = 0,
     };
 }
 
@@ -167,6 +168,10 @@ export fn visqol_create(opts_in: ?*const Options, out: ?*?*Ctx) c_int {
         setError("invalid backend {d}", .{opts.backend});
         return E_INVALID_ARGUMENT;
     };
+    const precision = std.enums.fromInt(visqol.Precision, opts.precision) orelse {
+        setError("invalid precision {d}", .{opts.precision});
+        return E_INVALID_ARGUMENT;
+    };
 
     const options: visqol.Options = .{
         .mode = @fromBackingInt(@intCast(opts.mode)),
@@ -175,6 +180,7 @@ export fn visqol_create(opts_in: ?*const Options, out: ?*?*Ctx) c_int {
         .disable_global_alignment = opts.disable_global_alignment != 0,
         .disable_realignment = opts.disable_realignment != 0,
         .use_lattice_model = opts.use_lattice_model != 0,
+        .precision = precision,
     };
 
     var model_text: []const u8 = backend.defaultModel(options);

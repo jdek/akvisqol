@@ -4,6 +4,7 @@
 // Non-negative floats order like their bits, so the integer max is exact
 // and independent of thread order. `top` is zeroed by the host.
 import lag_common;
+import tables;
 import zimt;
 
 [shader("compute")]
@@ -11,20 +12,21 @@ import zimt;
 void lag_max(
     uint3 tid: SV_DispatchThreadID,
     uniform RO<float2> corr,
-    uniform RO<uint> params,
+    uniform RO<LagParams> params,
     uniform RW<uint> top,
     uniform uint log2_n,
+    uniform uint chunk,
     uniform uint total_chunks)
 {
     uint g = zimt_index(tid);
     if (g >= total_chunks) return;
     uint n = 1u << log2_n;
-    uint chunks_per_row = n / LAG_CHUNK;
+    uint chunks_per_row = n / chunk;
     uint row = g / chunks_per_row;
-    uint first = (g % chunks_per_row) * LAG_CHUNK;
-    uint max_lag = params[row * 2];
+    uint first = (g % chunks_per_row) * chunk;
+    uint max_lag = params[row].max_lag;
     uint m = 0;
-    for (uint k = 0; k < LAG_CHUNK; k++) {
+    for (uint k = 0; k < chunk; k++) {
         uint i = first + k;
         if (lag_valid(i, n, max_lag)) m = max(m, asuint(lag_abs(corr, row, i, log2_n)));
     }

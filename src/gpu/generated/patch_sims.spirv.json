@@ -91,7 +91,116 @@
                                     "name": "p",
                                     "type": {
                                         "kind": "pointer",
-                                        "valueType": "uint",
+                                        "valueType": {
+                                            "kind": "struct",
+                                            "name": "SimRow",
+                                            "fields": [
+                                                {
+                                                    "name": "task",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "count",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "lo",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "ref",
+                                                    "type": {
+                                                        "kind": "struct",
+                                                        "name": "RefPatch",
+                                                        "fields": [
+                                                            {
+                                                                "name": "ref_off",
+                                                                "type": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "uint32",
+                                                                    "sizes": [
+                                                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                                                    ]
+                                                                },
+                                                                "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                            },
+                                                            {
+                                                                "name": "ref_frames",
+                                                                "type": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "uint32",
+                                                                    "sizes": [
+                                                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                                                    ]
+                                                                },
+                                                                "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                            },
+                                                            {
+                                                                "name": "ref_frame",
+                                                                "type": {
+                                                                    "kind": "scalar",
+                                                                    "scalarType": "uint32",
+                                                                    "sizes": [
+                                                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                                                    ]
+                                                                },
+                                                                "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                            }
+                                                        ],
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 12, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 12, "size": 12, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "deg_off",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "deg_frames",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 28, "size": 4, "elementStride": 0}
+                                                }
+                                            ],
+                                            "sizes": [
+                                                {"kind": "uniform", "value": 32, "alignment": 4}
+                                            ]
+                                        },
                                         "sizes": [
                                             {"kind": "uniform", "value": 8, "alignment": 8}
                                         ]
@@ -297,7 +406,7 @@
                                 "name": "p",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "uint",
+                                    "valueType": "SimRow",
                                     "sizes": [
                                         {"kind": "uniform", "value": 8, "alignment": 8}
                                     ]

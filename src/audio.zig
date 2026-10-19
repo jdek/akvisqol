@@ -130,11 +130,22 @@ inline fn decodeSample(format_tag: u16, bits: u16, p: []const u8) f64 {
 
 /// SPL in dB: 20 * log10(rms / SPL_REFERENCE_POINT).
 pub fn soundPressureLevel(samples: []const f64) f64 {
-    if (samples.len == 0) return -std.math.inf(f64);
     var energy: f64 = 0.0;
     for (samples) |x| energy += x * x;
-    const rms = @sqrt(energy / @as(f64, @floatFromInt(samples.len)));
+    return splOfEnergy(energy, samples.len);
+}
+
+/// `soundPressureLevel` of `len` samples whose squares sum to `energy`.
+pub fn splOfEnergy(energy: f64, len: usize) f64 {
+    if (len == 0) return -std.math.inf(f64);
+    const rms = @sqrt(energy / @as(f64, @floatFromInt(len)));
     return 20.0 * std.math.log10(rms / SPL_REFERENCE_POINT);
+}
+
+/// `scaleToMatchSpl`'s factor (1: left as is).
+pub fn splFactor(ref_spl: f64, deg_spl: f64) f64 {
+    if (!std.math.isFinite(ref_spl) or !std.math.isFinite(deg_spl)) return 1.0;
+    return std.math.pow(f64, 10.0, (ref_spl - deg_spl) / 20.0);
 }
 
 /// Scale `degraded` in place so its SPL matches `reference`.

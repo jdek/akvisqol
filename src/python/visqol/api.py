@@ -171,11 +171,14 @@ class VisqolApi:
         disable_realignment: bool = False,
         *,
         backend: str | None = None,
+        precision: str = "exact",
     ) -> None:
         """Initialise with the given configuration.
 
         Speech mode uses the lattice model unless `use_lattice_model` is False.
         `backend`: "cpu", "metal", "cuda" or "vulkan" (default `$VISQOL_BACKEND` or "cpu").
+        `precision`: GPU arithmetic, "exact" (f64, the CPU's scores bit for
+        bit), "balanced" (f32, two-float where f32 loses most) or "fast" (f32).
         """
         mode_lower = mode.lower()
         if mode_lower not in _VALID_MODES:
@@ -198,6 +201,7 @@ class VisqolApi:
                 use_lattice_model=lattice,
                 model_path=lattice_model_path if speech else model_path,
                 backend=(backend or os.environ.get("VISQOL_BACKEND", "cpu")).lower(),
+                precision=precision,
             )
         except _native.NativeError as e:
             _raise(e)

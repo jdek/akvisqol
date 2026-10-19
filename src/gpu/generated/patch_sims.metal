@@ -17,12 +17,29 @@ float RO_operatorx5Bx5D_get_1(const RO_0 constant* this_1, uint i_1)
     return *(this_1->p_0 + i_1);
 }
 
-struct RO_1
+struct RefPatch_0
 {
-    uint device* p_0;
+    uint ref_off_0;
+    uint ref_frames_0;
+    uint ref_frame_0;
 };
 
-uint RO_operatorx5Bx5D_get_2(const RO_1 constant* this_2, uint i_2)
+struct SimRow_0
+{
+    uint task_0;
+    uint count_0;
+    uint lo_0;
+    RefPatch_0 ref_0;
+    uint deg_off_0;
+    uint deg_frames_0;
+};
+
+struct RO_1
+{
+    SimRow_0 device* p_0;
+};
+
+SimRow_0 RO_operatorx5Bx5D_get_2(const RO_1 constant* this_2, uint i_2)
 {
     return *(this_2->p_0 + i_2);
 }
@@ -126,8 +143,8 @@ struct KernelContext_0
             break;
         }
         uint mid_0 = (lo_r_0 + hi_r_0 + 1U) / 2U;
-        uint _S8 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, mid_0 * 8U);
-        if(_S8 <= t_0)
+        SimRow_0 _S8 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, mid_0);
+        if((_S8.task_0) <= t_0)
         {
             lo_r_0 = mid_0;
         }
@@ -136,24 +153,16 @@ struct KernelContext_0
             hi_r_0 = mid_0 - 1U;
         }
     }
-    uint _S9 = lo_r_0 * 8U;
-    uint _S10 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9);
-    uint k_0 = t_0 - _S10;
-    uint _S11 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 2U);
-    uint _S12 = _S11 + k_0;
-    uint _S13 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 3U);
-    uint _S14 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 4U);
-    uint _S15 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 5U);
-    uint _S16 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 6U);
-    uint _S17 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 7U);
-    int _S18 = int((&kernelContext_0)->entryPointParams_0->num_bands_0);
-    int _S19 = int((&kernelContext_0)->entryPointParams_0->patch_size_0);
+    SimRow_0 _S9 = RO_operatorx5Bx5D_get_2(&(&kernelContext_0)->entryPointParams_0->rows_0, lo_r_0);
+    uint _S10 = _S9.lo_0 + t_0 - _S9.task_0;
+    int _S11 = int((&kernelContext_0)->entryPointParams_0->num_bands_0);
+    int _S12 = int((&kernelContext_0)->entryPointParams_0->patch_size_0);
     uint cells_0 = (&kernelContext_0)->entryPointParams_0->num_bands_0 * (&kernelContext_0)->entryPointParams_0->patch_size_0;
     int r_0 = int(0);
     float total_0 = 0.0f;
     for(;;)
     {
-        if(r_0 < _S18)
+        if(r_0 < _S11)
         {
         }
         else
@@ -164,7 +173,7 @@ struct KernelContext_0
         float band_sum_0 = 0.0f;
         for(;;)
         {
-            if(c_0 < _S19)
+            if(c_0 < _S12)
             {
             }
             else
@@ -184,7 +193,7 @@ struct KernelContext_0
                 {
                     break;
                 }
-                int _S20 = clamp(r_0 + dr_1, int(0), _S18 - int(1));
+                int _S13 = clamp(r_0 + dr_1, int(0), _S11 - int(1));
                 int dc_1 = int(-1);
                 for(;;)
                 {
@@ -195,13 +204,13 @@ struct KernelContext_0
                     {
                         break;
                     }
-                    int cc_0 = clamp(c_0 + dc_1, int(0), _S19 - int(1));
+                    int cc_0 = clamp(c_0 + dc_1, int(0), _S12 - int(1));
                     float w_0 = wgt_0(dr_1, dc_1);
-                    float _S21 = degAt_0(&(&kernelContext_0)->entryPointParams_0->deg_spec_0, _S16, _S17, _S20, int(_S12) + cc_0);
-                    float _S22 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->ref_spec_0, _S13 + uint(_S20) * _S14 + _S15 + uint(cc_0));
-                    float md_1 = md_0 + w_0 * _S21;
-                    float dsq_1 = dsq_0 + w_0 * (_S21 * _S21);
-                    float rd_1 = rd_0 + w_0 * (_S22 * _S21);
+                    float _S14 = degAt_0(&(&kernelContext_0)->entryPointParams_0->deg_spec_0, _S9.deg_off_0, _S9.deg_frames_0, _S13, int(_S10) + cc_0);
+                    float _S15 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->ref_spec_0, _S9.ref_0.ref_off_0 + uint(_S13) * _S9.ref_0.ref_frames_0 + _S9.ref_0.ref_frame_0 + uint(cc_0));
+                    float md_1 = md_0 + w_0 * _S14;
+                    float dsq_1 = dsq_0 + w_0 * (_S14 * _S14);
+                    float rd_1 = rd_0 + w_0 * (_S15 * _S14);
                     dc_1 = dc_1 + int(1);
                     md_0 = md_1;
                     dsq_0 = dsq_1;
@@ -210,13 +219,13 @@ struct KernelContext_0
                 dr_1 = dr_1 + int(1);
             }
             uint ci_0 = lo_r_0 * cells_0 + uint(r_0) * (&kernelContext_0)->entryPointParams_0->patch_size_0 + uint(c_0);
-            float _S23 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->mu_ref_0, ci_0);
-            float _S24 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->srs_ref_0, ci_0);
+            float _S16 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->mu_ref_0, ci_0);
+            float _S17 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->srs_ref_0, ci_0);
             float dms_0 = md_0 * md_0;
-            float mrd_0 = _S23 * md_0;
+            float mrd_0 = _S16 * md_0;
             float srd_0 = rd_0 - mrd_0;
-            float intensity_0 = (2.0f * mrd_0 + 0.00009999999747379f) / (_S23 * _S23 + dms_0 + 0.00009999999747379f);
-            float prod_0 = _S24 * (dsq_0 - dms_0);
+            float intensity_0 = (2.0f * mrd_0 + 0.00009999999747379f) / (_S16 * _S16 + dms_0 + 0.00009999999747379f);
+            float prod_0 = _S17 * (dsq_0 - dms_0);
             float denom_0;
             if(prod_0 < 0.0f)
             {

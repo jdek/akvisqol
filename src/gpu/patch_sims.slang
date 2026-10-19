@@ -4,10 +4,8 @@
 // NSIM of ref patch `row` vs the degraded patch at frame `lo + k`, one thread
 // per (row, k). Mirrors `Comparator.measureSimilarityScalar`; degraded frames
 // past nf_deg read as zero. Results are compact, one per task: `out[t]`.
-//
-// rows: (num_rows, 8) u32 — task_base, count, lo, ref_base, nf_ref, ref_col,
-//       deg_base, nf_deg.
 import nsim_common;
+import tables;
 import zimt;
 
 float degAt(RO<float> deg, uint base, uint nf, int band, int col)
@@ -21,7 +19,7 @@ void patch_sims(
     uint3 tid: SV_DispatchThreadID,
     uniform RO<float> ref_spec,
     uniform RO<float> deg_spec,
-    uniform RO<uint> rows,
+    uniform RO<SimRow> rows,
     uniform RO<float> mu_ref,
     uniform RO<float> srs_ref,
     uniform RW<float> out,
@@ -36,16 +34,16 @@ void patch_sims(
     uint lo_r = 0, hi_r = num_rows - 1;
     while (lo_r < hi_r) {
         uint mid = (lo_r + hi_r + 1) / 2;
-        if (rows[mid * 8 + 0] <= t) lo_r = mid; else hi_r = mid - 1;
+        if (rows[mid].task <= t) lo_r = mid; else hi_r = mid - 1;
     }
     uint row = lo_r;
-    uint k = t - rows[row * 8 + 0];
-    uint off = rows[row * 8 + 2] + k;
-    uint ref_base = rows[row * 8 + 3];
-    uint nf_ref = rows[row * 8 + 4];
-    uint ref_col = rows[row * 8 + 5];
-    uint deg_base = rows[row * 8 + 6];
-    uint nf_deg = rows[row * 8 + 7];
+    SimRow r = rows[row];
+    uint off = r.lo + t - r.task;
+    uint ref_base = r.ref.ref_off;
+    uint nf_ref = r.ref.ref_frames;
+    uint ref_col = r.ref.ref_frame;
+    uint deg_base = r.deg_off;
+    uint nf_deg = r.deg_frames;
 
     int nb = int(num_bands);
     int ps = int(patch_size);

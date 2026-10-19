@@ -11,11 +11,11 @@
     },
     "entryPoints": [
         {
-            "name": "gammatone_frames",
+            "name": "nsim_bands",
             "stage": "compute",
             "scope": {
                 "kind": "constantBuffer",
-                "binding": {"kind": "constantBuffer", "index": 0},
+                "binding": {"kind": "pushConstantBuffer", "index": 0},
                 "parameters": [
                     {
                         "name": "tid",
@@ -33,7 +33,7 @@
                         }
                     },
                     {
-                        "name": "signals",
+                        "name": "ref_spec",
                         "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
                         "type": {
                             "kind": "struct",
@@ -57,7 +57,7 @@
                         }
                     },
                     {
-                        "name": "frames",
+                        "name": "deg_spec",
                         "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
                         "type": {
                             "kind": "struct",
@@ -67,7 +67,7 @@
                                     "name": "p",
                                     "type": {
                                         "kind": "pointer",
-                                        "valueType": "uint",
+                                        "valueType": "float",
                                         "sizes": [
                                             {"kind": "uniform", "value": 8, "alignment": 8}
                                         ]
@@ -81,7 +81,7 @@
                         }
                     },
                     {
-                        "name": "coeffs",
+                        "name": "window",
                         "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0},
                         "type": {
                             "kind": "struct",
@@ -105,7 +105,7 @@
                         }
                     },
                     {
-                        "name": "coeffs2",
+                        "name": "rows",
                         "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0},
                         "type": {
                             "kind": "struct",
@@ -115,7 +115,92 @@
                                     "name": "p",
                                     "type": {
                                         "kind": "pointer",
-                                        "valueType": "float",
+                                        "valueType": {
+                                            "kind": "struct",
+                                            "name": "PatchPair",
+                                            "fields": [
+                                                {
+                                                    "name": "ref_off",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 0, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "ref_frames",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 4, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "ref_frame",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 8, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "deg_off",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 12, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "deg_frames",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 16, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "deg_frame",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 20, "size": 4, "elementStride": 0}
+                                                },
+                                                {
+                                                    "name": "cols",
+                                                    "type": {
+                                                        "kind": "scalar",
+                                                        "scalarType": "uint32",
+                                                        "sizes": [
+                                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                                        ]
+                                                    },
+                                                    "binding": {"kind": "uniform", "offset": 24, "size": 4, "elementStride": 0}
+                                                }
+                                            ],
+                                            "sizes": [
+                                                {"kind": "uniform", "value": 28, "alignment": 4}
+                                            ]
+                                        },
                                         "sizes": [
                                             {"kind": "uniform", "value": 8, "alignment": 8}
                                         ]
@@ -129,7 +214,7 @@
                         }
                     },
                     {
-                        "name": "hann",
+                        "name": "active",
                         "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0},
                         "type": {
                             "kind": "struct",
@@ -139,7 +224,7 @@
                                     "name": "p",
                                     "type": {
                                         "kind": "pointer",
-                                        "valueType": "float",
+                                        "valueType": "uint",
                                         "sizes": [
                                             {"kind": "uniform", "value": 8, "alignment": 8}
                                         ]
@@ -153,7 +238,7 @@
                         }
                     },
                     {
-                        "name": "out",
+                        "name": "stats",
                         "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0},
                         "type": {
                             "kind": "struct",
@@ -177,7 +262,7 @@
                         }
                     },
                     {
-                        "name": "num_frames",
+                        "name": "num_rows",
                         "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
@@ -199,11 +284,22 @@
                         }
                     },
                     {
-                        "name": "window_size",
+                        "name": "c1",
                         "binding": {"kind": "uniform", "offset": 56, "size": 4, "elementStride": 0},
                         "type": {
                             "kind": "scalar",
-                            "scalarType": "uint32",
+                            "scalarType": "float32",
+                            "sizes": [
+                                {"kind": "uniform", "value": 4, "alignment": 4}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "c3",
+                        "binding": {"kind": "uniform", "offset": 60, "size": 4, "elementStride": 0},
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "float32",
                             "sizes": [
                                 {"kind": "uniform", "value": 4, "alignment": 4}
                             ]
@@ -228,7 +324,7 @@
                     }
                 },
                 {
-                    "name": "signals",
+                    "name": "ref_spec",
                     "binding": {"kind": "uniform", "offset": 0, "size": 8, "elementStride": 0},
                     "type": {
                         "kind": "struct",
@@ -252,7 +348,7 @@
                     }
                 },
                 {
-                    "name": "frames",
+                    "name": "deg_spec",
                     "binding": {"kind": "uniform", "offset": 8, "size": 8, "elementStride": 0},
                     "type": {
                         "kind": "struct",
@@ -262,7 +358,7 @@
                                 "name": "p",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "uint",
+                                    "valueType": "float",
                                     "sizes": [
                                         {"kind": "uniform", "value": 8, "alignment": 8}
                                     ]
@@ -276,7 +372,7 @@
                     }
                 },
                 {
-                    "name": "coeffs",
+                    "name": "window",
                     "binding": {"kind": "uniform", "offset": 16, "size": 8, "elementStride": 0},
                     "type": {
                         "kind": "struct",
@@ -300,7 +396,7 @@
                     }
                 },
                 {
-                    "name": "coeffs2",
+                    "name": "rows",
                     "binding": {"kind": "uniform", "offset": 24, "size": 8, "elementStride": 0},
                     "type": {
                         "kind": "struct",
@@ -310,7 +406,7 @@
                                 "name": "p",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "float",
+                                    "valueType": "PatchPair",
                                     "sizes": [
                                         {"kind": "uniform", "value": 8, "alignment": 8}
                                     ]
@@ -324,7 +420,7 @@
                     }
                 },
                 {
-                    "name": "hann",
+                    "name": "active",
                     "binding": {"kind": "uniform", "offset": 32, "size": 8, "elementStride": 0},
                     "type": {
                         "kind": "struct",
@@ -334,7 +430,7 @@
                                 "name": "p",
                                 "type": {
                                     "kind": "pointer",
-                                    "valueType": "float",
+                                    "valueType": "uint",
                                     "sizes": [
                                         {"kind": "uniform", "value": 8, "alignment": 8}
                                     ]
@@ -348,7 +444,7 @@
                     }
                 },
                 {
-                    "name": "out",
+                    "name": "stats",
                     "binding": {"kind": "uniform", "offset": 40, "size": 8, "elementStride": 0},
                     "type": {
                         "kind": "struct",
@@ -372,7 +468,7 @@
                     }
                 },
                 {
-                    "name": "num_frames",
+                    "name": "num_rows",
                     "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
@@ -394,11 +490,22 @@
                     }
                 },
                 {
-                    "name": "window_size",
+                    "name": "c1",
                     "binding": {"kind": "uniform", "offset": 56, "size": 4, "elementStride": 0},
                     "type": {
                         "kind": "scalar",
-                        "scalarType": "uint32",
+                        "scalarType": "float32",
+                        "sizes": [
+                            {"kind": "uniform", "value": 4, "alignment": 4}
+                        ]
+                    }
+                },
+                {
+                    "name": "c3",
+                    "binding": {"kind": "uniform", "offset": 60, "size": 4, "elementStride": 0},
+                    "type": {
+                        "kind": "scalar",
+                        "scalarType": "float32",
                         "sizes": [
                             {"kind": "uniform", "value": 4, "alignment": 4}
                         ]
@@ -411,5 +518,5 @@
             ]
         }
     ],
-    "bindlessSpaceIndex": 1
+    "bindlessSpaceIndex": 0
 }

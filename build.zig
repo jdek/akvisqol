@@ -145,7 +145,7 @@ fn sharedName(os: std.Target.Os.Tag) []const u8 {
 }
 
 const kernels = [_]zimt.Entry{
-    .{ .name = "gammatone_frames" },
+    // f32 only: the FFT lag search, and the hybrid path's DP similarities.
     .{ .name = "ref_stats" },
     .{ .name = "patch_sims" },
     .{ .name = "fft_radix2", .source = "fft", .entry = "fft_pass<Radix2>" },
@@ -155,4 +155,37 @@ const kernels = [_]zimt.Entry{
     .{ .name = "lag_pack" },
     .{ .name = "lag_max" },
     .{ .name = "lag_cands" },
-};
+    .{ .name = "lag_first" },
+    .{ .name = "lag_fast_pick", .source = "lag_first" },
+    // f64 only.
+    .{ .name = "lag_rescore", .float64 = true, .precise = true },
+    .{ .name = "lag_pick", .source = "lag_rescore", .float64 = true, .precise = true },
+    .{ .name = "to_f32", .source = "envelope", .float64 = true, .precise = true, .defines = &.{ "REAL=double", "EXACT=1", "BALANCED=0" } },
+} ++ real(.{ "env_sums", "env_reduce", "env_nyq", "env_write", "lag_params" }, "envelope") ++
+    real(.{"gammatone_frames"}, "gammatone_frames") ++
+    real(.{"gammatone_patches"}, "gammatone_patches") ++
+    real(.{"spec_prep"}, "spec_prep") ++
+    real(.{ "deg_plane", "ref_terms", "nsim_table", "nsim_bands" }, "nsim") ++
+    real(.{ "dp_search", "match_rows", "match_finalize" }, "dp") ++
+    real(.{ "spl_energy", "apply_lag" }, "pre") ++
+    real(.{ "realign_rows", "realign_frames", "realign_accept" }, "realign") ++
+    balanced(.{ .{ "gammatone_frames", "gammatone_frames" }, .{ "gammatone_patches", "gammatone_patches" }, .{ "apply_lag", "pre" }, .{ "spec_prep", "spec_prep" }, .{ "nsim_bands", "nsim" } });
+
+/// `<name>_bal`: f32 kernels in two-float arithmetic (df.slang), the
+/// balanced build; `.{ name, source }`.
+fn balanced(comptime names: anytype) [names.len]zimt.Entry {
+    var out: [names.len]zimt.Entry = undefined;
+    for (names, &out) |n, *e| e.* = .{ .name = n[0] ++ "_bal", .source = n[1], .entry = n[0], .precise = true, .defines = &.{ "REAL=float", "EXACT=0", "BALANCED=1" } };
+    return out;
+}
+
+/// `<name>_f64`, CPU-exact (`EXACT`, no FMA contraction), and `<name>_f32`,
+/// the fast build, of one source with `REAL` double and float.
+fn real(comptime names: anytype, comptime source: []const u8) [names.len * 2]zimt.Entry {
+    var out: [names.len * 2]zimt.Entry = undefined;
+    for (names, 0..) |name, i| {
+        out[2 * i] = .{ .name = name ++ "_f64", .source = source, .entry = name, .float64 = true, .precise = true, .defines = &.{ "REAL=double", "EXACT=1", "BALANCED=0" } };
+        out[2 * i + 1] = .{ .name = name ++ "_f32", .source = source, .entry = name, .defines = &.{ "REAL=float", "EXACT=0", "BALANCED=0" } };
+    }
+    return out;
+}

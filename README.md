@@ -27,8 +27,8 @@ zig build -Doptimize=ReleaseFast
 
 Flags match upstream's (`--use_speech_mode`, `--use_lattice_model`,
 `--search_window_radius`, `--disable_global_alignment`, …), plus
-`--backend cpu|metal|cuda|vulkan` and `--threads N`. Batches use all cores by
-default.
+`--backend cpu|metal|cuda|vulkan`, `--threads N` and `--precision exact|balanced|fast`
+(see [Backends](#backends)). Batches use all cores by default.
 
 ### C and Zig
 
@@ -172,22 +172,47 @@ glibc 2.17 on Linux). macOS wheels with Metal need a macOS host.
 | `cuda` | `-Dcuda` | needs `slangc` with NVRTC to build (`nix develop .#cuda`) and fetches the CUDA headers; loads `libcuda` at run time |
 | `vulkan` | `-Dvulkan` | Vulkan 1.2 with buffer device addresses; fetches the Vulkan headers to build; loads the Vulkan loader at run time; not on musl |
 
-The model talks to an `Accelerator` interface ([`src/accel.zig`](src/accel.zig))
-covering the three hot spots: gammatone spectrograms, the DP
-patch-similarity matrix, and the alignment cross-correlation.
-[`src/gpu/engine.zig`](src/gpu/engine.zig) implements it with Slang kernels
-on [zimt](zimt/README.md), a standalone Slang compute runtime that
-generates typed Zig bindings from Slang reflection.
+GPU backends run the whole model on the device
+([`src/gpu/pipeline.zig`](src/gpu/pipeline.zig)), Slang kernels on
+[zimt](zimt/README.md), a standalone Slang compute runtime that generates
+typed Zig bindings from Slang reflection. Signals go up once; the host
+reads back the global lags (to plan frames, patches and VAD) and, at the
+end, each patch's match and statistics, which the CPU's code maps to a
+score. Each kernel builds from one source per precision:
+
+- `--precision exact` (default) runs them in f64 with the CPU's operation
+  order and no FMA contraction, and gives the CPU's results bit for bit
+  (CUDA, and Vulkan with `shaderFloat64`; tested on an RTX 3080 and
+  lavapipe). Consumer GPUs run f64 at a fraction of f32's rate, so this
+  mode is about as fast as the CPU on all cores there.
+- `--precision fast` runs them in f32 (delta-form gammatone filters, NSIM
+  variances about each cell, alignment lags from the f32 correlation's
+  maximum): scores within ~5e-7 of the CPU's, ~4× faster than the CPU on
+  all cores.
+- `--precision balanced` is fast, but with the stages f32 loses most in
+  done in two-float arithmetic (hi + lo f32 pairs,
+  [`src/gpu/df.slang`](src/gpu/df.slang)): the gammatone filterbank, dB
+  conversion and NSIM band statistics. Scores within ~1e-7 of the CPU's,
+  ~2.4× faster than the CPU on all cores.
+
+Real-time factor (wall time / audio time; lower is faster) over 130
+reference pairs, 1550 s of audio, on a Ryzen 9 3900X and an RTX 3080,
+with batch workers on all cores or one:
+
+| | CPU | CUDA | Vulkan | CPU, 1T | CUDA, 1T | Vulkan, 1T |
+|---|---:|---:|---:|---:|---:|---:|
+| exact | 2.32e-3 | 2.73e-3 | 3.00e-3 | 2.56e-2 | 3.44e-3 | 3.48e-3 |
+| balanced | | 9.81e-4 | 1.19e-3 | | 1.63e-3 | 1.76e-3 |
+| fast | | 5.71e-4 | 6.89e-4 | | 1.02e-3 | 1.11e-3 |
+
+Without f64 (Metal), exact keeps the CPU model, with the GPU computing its
+spectrograms, DP similarities and lag searches in f32 (the `Accelerator`
+interface, [`src/accel.zig`](src/accel.zig)) and rescoring lags in f64;
+scores drift <1e-6.
 
 Batches spread over several GPU lanes (zimt devices: streams on CUDA,
 queues on Vulkan and Metal) so worker threads overlap their transfers and
 kernels; up to 4 on CUDA and 2 elsewhere, `VISQOL_GPU_LANES=N` to change.
-Alignment lag peaks are found on the GPU and only candidates return.
-
-GPU kernels are f32; normalisation, DP, statistics and quality mapping
-stay f64 on the CPU. Gammatone filters run in delta form (direct form
-loses ~1e-3 relative accuracy in the 50 Hz band in f32), and alignment
-lags found by the f32 FFT are rescored in f64, so they are exact.
 
 ## Development
 

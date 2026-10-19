@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Batched compute-offload interface for the model's hot spots
-//! (spectrograms, DP patch similarities, alignment cross-correlation).
+//! (spectrograms, DP patch similarities, alignment lags, patch realignment).
 //! `Cpu` is the reference implementation; GPU ones live in `src/gpu/`.
 const std = @import("std");
 const gammatone = @import("gammatone.zig");
 const nsim = @import("nsim.zig");
 const dp = @import("dp.zig");
 const xcorr = @import("xcorr.zig");
+const realign = @import("realign.zig");
 
 /// Filterbank + analysis window shared by every job in one call.
 pub const SpecParams = struct {
@@ -42,13 +43,44 @@ pub const SimJob = struct {
     out: []f64,
 };
 
-/// `out.* = xcorr.bestLagCached(a, b)`: the lag maximising
-/// |Σ_t a[t + lag]·b[t]| over |lag| < max(a.len, b.len), first maximum
-/// in the order negative lags (most negative first), then 0, 1, ….
+/// `out.*` = `xcorr.bestLagCached` of the upper envelopes of `a` and `b`
+/// (`realign.alignmentEnvelopes`): the lag maximising |Σ_t a[t + lag]·b[t]|
+/// over |lag| < max(a.len, b.len), first maximum in the order negative lags
+/// (most negative first), then 0, 1, ….
 pub const LagJob = struct {
     a: []const f64,
     b: []const f64,
     out: *i64,
+};
+
+/// `realign.sliceAudio(signal, …)` without the copy.
+pub const View = struct {
+    signal: []const f64,
+    layout: realign.SliceLayout,
+
+    pub fn len(v: View) usize {
+        return v.layout.pad + v.layout.len;
+    }
+};
+
+/// Fine alignment of a matched patch pair (`realign.realignCpu`): the
+/// `LagJob` lag of the slices, then the spectrograms of what
+/// `realign.trimGeometry` keeps of them.
+pub const RealignJob = struct {
+    ref: View,
+    deg: View,
+    /// Full-signal spectrograms to copy grid-aligned frames from.
+    raw: ?realign.RawSpectrograms = null,
+    out: *RealignOut,
+};
+
+pub const RealignOut = struct {
+    lag: i64 = 0,
+    /// Of both spectrograms; 0 when the trimmed patch is under a window.
+    num_frames: usize = 0,
+    /// `[bands][num_frames]`, room for the frames of `ref.len()` samples.
+    ref_spec: []f64,
+    deg_spec: []f64,
 };
 
 pub const Accelerator = struct {
@@ -59,6 +91,7 @@ pub const Accelerator = struct {
         spectrograms: *const fn (ctx: *anyopaque, params: SpecParams, jobs: []const SpecJob) anyerror!void,
         patchSimilarities: *const fn (ctx: *anyopaque, jobs: []const SimJob) anyerror!void,
         bestLags: *const fn (ctx: *anyopaque, jobs: []const LagJob) anyerror!void,
+        realign: *const fn (ctx: *anyopaque, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) anyerror!void,
     };
 
     pub fn spectrograms(self: Accelerator, params: SpecParams, jobs: []const SpecJob) !void {
@@ -74,6 +107,11 @@ pub const Accelerator = struct {
     pub fn bestLags(self: Accelerator, jobs: []const LagJob) !void {
         if (jobs.len == 0) return;
         return self.vtable.bestLags(self.ctx, jobs);
+    }
+
+    pub fn realign(self: Accelerator, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) !void {
+        if (jobs.len == 0) return;
+        return self.vtable.realign(self.ctx, params, sample_rate, jobs);
     }
 };
 
@@ -95,12 +133,29 @@ pub const Cpu = struct {
         .spectrograms = spectrogramsImpl,
         .patchSimilarities = patchSimilaritiesImpl,
         .bestLags = bestLagsImpl,
+        .realign = realignImpl,
     };
+
+    fn cache(self: *Cpu) *xcorr.Cache {
+        if (self.xcorr_cache == null) self.xcorr_cache = xcorr.Cache.init(self.allocator);
+        return &self.xcorr_cache.?;
+    }
 
     fn bestLagsImpl(ctx: *anyopaque, jobs: []const LagJob) anyerror!void {
         const self: *Cpu = @ptrCast(@alignCast(ctx));
-        if (self.xcorr_cache == null) self.xcorr_cache = xcorr.Cache.init(self.allocator);
-        for (jobs) |j| j.out.* = try xcorr.bestLagCached(&self.xcorr_cache.?, j.a, j.b);
+        for (jobs) |j| {
+            const env = try realign.alignmentEnvelopes(self.allocator, j.a, j.b);
+            defer self.allocator.free(env.ref);
+            defer self.allocator.free(env.deg);
+            j.out.* = try xcorr.bestLagCached(self.cache(), env.ref, env.deg);
+        }
+    }
+
+    fn realignImpl(ctx: *anyopaque, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) anyerror!void {
+        const self: *Cpu = @ptrCast(@alignCast(ctx));
+        const frame_buf = try gammatone.allocFrameBuf(self.allocator, params.window_size);
+        defer self.allocator.free(frame_buf);
+        for (jobs) |j| try realign.realignCpu(self.allocator, self.cache(), params, sample_rate, j, frame_buf);
     }
 
     fn spectrogramsImpl(ctx: *anyopaque, params: SpecParams, jobs: []const SpecJob) anyerror!void {

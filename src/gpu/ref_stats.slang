@@ -3,9 +3,8 @@
 
 // Per ref patch cell: mu = conv3x3(ref), srs = conv3x3(ref^2) - mu^2,
 // replicate-padded. One thread per (row, cell); reused by `patch_sims`.
-//
-// rows: (num_rows, 3) u32 — spec offset (row-major [bands, nf]), nf, patch column.
 import nsim_common;
+import tables;
 import zimt;
 
 [shader("compute")]
@@ -13,7 +12,7 @@ import zimt;
 void ref_stats(
     uint3 tid: SV_DispatchThreadID,
     uniform RO<float> spec,
-    uniform RO<uint> rows,
+    uniform RO<RefPatch> rows,
     uniform RW<float> mu,
     uniform RW<float> srs,
     uniform uint num_rows,
@@ -28,9 +27,9 @@ void ref_stats(
     int r = int(cell / patch_size);
     int c = int(cell % patch_size);
 
-    uint base = rows[row * 3 + 0];
-    uint nf = rows[row * 3 + 1];
-    uint col0 = rows[row * 3 + 2];
+    uint base = rows[row].ref_off;
+    uint nf = rows[row].ref_frames;
+    uint col0 = rows[row].ref_frame;
 
     float m = 0, sq = 0;
     for (int dr = -1; dr <= 1; dr++) {

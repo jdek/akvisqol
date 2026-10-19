@@ -25,6 +25,9 @@ const usage =
     \\  --verbose                         print per-band and per-patch detail
     \\  --backend cpu|metal|cuda|vulkan   compute backend (default cpu)
     \\  --threads N                       batch worker threads (default: all cores)
+    \\  --precision exact|balanced|fast   GPU arithmetic: f64, the CPU's scores bit for
+    \\                                    bit (default); f32 with two-float where f32
+    \\                                    loses most; or f32
     \\
 ;
 
@@ -87,6 +90,8 @@ pub fn main(init: std.process.Init) !void {
             kind = std.meta.stringToEnum(backend.Kind, try next(args, &i)) orelse return fail(out, "unknown backend");
         } else if (eq(a, "--threads")) {
             threads = try std.fmt.parseInt(u32, try next(args, &i), 10);
+        } else if (eq(a, "--precision")) {
+            options.precision = std.meta.stringToEnum(visqol.Precision, try next(args, &i)) orelse return fail(out, "unknown precision");
         } else if (eq(a, "-h") or eq(a, "--help")) {
             try out.writeAll(usage);
             return;

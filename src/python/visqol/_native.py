@@ -17,6 +17,7 @@ MODE_AUDIO = 0
 MODE_SPEECH = 1
 
 BACKENDS = {"cpu": 0, "metal": 1, "cuda": 2, "vulkan": 3}
+PRECISIONS = {"exact": 0, "fast": 1, "balanced": 2}
 
 OK = 0
 E_INVALID_ARGUMENT = -1
@@ -38,7 +39,7 @@ class Options(ctypes.Structure):
         ("use_lattice_model", c_uint8),
         ("model_path", c_char_p),
         ("backend", c_uint32),
-        ("_reserved1", c_uint32),
+        ("precision", c_uint32),
     ]
 
 
@@ -166,9 +167,11 @@ class Context:
 
     def __init__(self, *, mode: int, search_window_radius: int, use_unscaled_speech_mos_mapping: bool,
                  disable_global_alignment: bool, disable_realignment: bool,
-                 use_lattice_model: bool, model_path: str | None, backend: str):
+                 use_lattice_model: bool, model_path: str | None, backend: str, precision: str = "exact"):
         if backend not in BACKENDS:
             raise ValueError(f"unknown backend {backend!r}; expected one of {sorted(BACKENDS)}")
+        if precision not in PRECISIONS:
+            raise ValueError(f"unknown precision {precision!r}; expected one of {sorted(PRECISIONS)}")
         opts = Options()
         lib.visqol_options_default(ctypes.byref(opts))
         opts.mode = mode
@@ -179,6 +182,7 @@ class Context:
         opts.use_lattice_model = int(bool(use_lattice_model))
         opts.model_path = os.fsencode(model_path) if model_path else None
         opts.backend = BACKENDS[backend]
+        opts.precision = PRECISIONS[precision]
         handle = c_void_p()
         rc = lib.visqol_create(ctypes.byref(opts), ctypes.byref(handle))
         if rc != OK:

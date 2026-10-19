@@ -43,6 +43,12 @@ pub const Error = error{
 
 pub const Mode = enum(u8) { audio = 0, speech = 1 };
 
+/// Of GPU backends (the CPU is always exact). `.exact`: the CPU's results
+/// bit for bit where the device has f64 (else f32 hot spots, f64 lags).
+/// `.fast`: f32 throughout. `.balanced`: f32, with two-float signals,
+/// gammatone filterbank, dB conversion and NSIM band statistics.
+pub const Precision = enum(u8) { exact = 0, fast = 1, balanced = 2 };
+
 pub const Options = struct {
     mode: Mode = .audio,
     /// DP search radius in frames.
@@ -53,6 +59,7 @@ pub const Options = struct {
     use_lattice_model: bool = false,
     disable_global_alignment: bool = false,
     disable_realignment: bool = false,
+    precision: Precision = .exact,
 };
 
 pub const QualityMapper = union(enum) {
@@ -212,6 +219,7 @@ pub const Visqol = struct {
 pub fn Pipeline(comptime NUM_BANDS: usize) type {
     return struct {
         const Self = @This();
+        pub const num_bands = NUM_BANDS;
 
         allocator: std.mem.Allocator,
         patch_size: usize,
@@ -232,7 +240,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             if (self.cached_hann.len > 0) self.allocator.free(self.cached_hann);
         }
 
-        fn ensureCache(self: *Self, sample_rate: u32) !void {
+        pub fn ensureCache(self: *Self, sample_rate: u32) !void {
             if (self.cached_sample_rate == sample_rate and self.cached_filters != null) return;
             const sr_f: f64 = @floatFromInt(sample_rate);
             self.cached_filters = gammatone.Filters(NUM_BANDS).init(sample_rate, self.min_freq, self.max_freq orelse sr_f / 2.0);
@@ -250,7 +258,6 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
         const State = struct {
             failed: ?anyerror = null,
             deg: []f64 = &.{},
-            env: ?realign_mod.Envelopes = null,
             lag: i64 = 0,
             lag_s: f64 = 0.0,
             nf_ref: usize = 0,
@@ -262,19 +269,9 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             ref_indices: []usize = &.{},
             plan: ?dp.SearchPlan = null,
             matches: ?dp.Matches = null,
-            realign_plan: ?realign_mod.RealignPlan = null,
-            realign: ?realign_mod.RealignPrep = null,
-
-            fn freeEnvelopes(st: *State, a: std.mem.Allocator) void {
-                if (st.env) |e| {
-                    a.free(e.ref);
-                    a.free(e.deg);
-                }
-                st.env = null;
-            }
+            realign: ?realign_mod.RealignPlan = null,
 
             fn deinit(st: *State, a: std.mem.Allocator) void {
-                st.freeEnvelopes(a);
                 a.free(st.deg);
                 a.free(st.ref_spec);
                 a.free(st.deg_spec);
@@ -283,7 +280,6 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
                 a.free(st.ref_indices);
                 if (st.plan) |*x| x.deinit();
                 if (st.matches) |*x| x.deinit();
-                if (st.realign_plan) |*x| x.deinit();
                 if (st.realign) |*x| x.deinit();
             }
 
@@ -329,13 +325,8 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
                 defer lag_jobs.deinit(allocator);
                 for (pairs, states) |pair, *st| {
                     if (pair.ref.len == 0 or pair.deg.len == 0) continue;
-                    st.env = realign_mod.alignmentEnvelopes(allocator, pair.ref, pair.deg) catch |e| {
-                        st.failed = e;
-                        continue;
-                    };
-                    try lag_jobs.append(allocator, .{ .a = st.env.?.ref, .b = st.env.?.deg, .out = &st.lag });
+                    try lag_jobs.append(allocator, .{ .a = pair.ref, .b = pair.deg, .out = &st.lag });
                 }
-                defer for (states) |*st| st.freeEnvelopes(allocator);
                 try acc.bestLags(lag_jobs.items);
             }
 
@@ -363,43 +354,18 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             // 6a: DP similarity matrix.
             try acc.patchSimilarities(sim_jobs.items);
 
-            // 6b: DP backtrace; queue every patch's realignment lag search.
-            var patch_lags: std.ArrayList(accel.LagJob) = .empty;
-            defer patch_lags.deinit(allocator);
+            // 6b: DP backtrace; queue every patch's realignment.
+            var realign_jobs: std.ArrayList(accel.RealignJob) = .empty;
+            defer realign_jobs.deinit(allocator);
             for (pairs, states) |pair, *st| {
                 if (!st.live()) continue;
-                self.searchPair(pair, st, options, sample_rate, frame_duration, &patch_lags) catch |e| {
+                self.searchPair(pair, st, options, sample_rate, frame_duration, &realign_jobs) catch |e| {
                     st.failed = e;
                 };
             }
-            try acc.bestLags(patch_lags.items);
 
-            // 6c: align and truncate patches; queue their spectrograms.
-            spec_jobs.clearRetainingCapacity();
-            for (pairs, states) |pair, *st| {
-                if (!st.live() or st.realign_plan == null) continue;
-                st.realign = realign_mod.prepareRealign(
-                    NUM_BANDS,
-                    allocator,
-                    &st.realign_plan.?,
-                    &st.matches.?,
-                    pair.ref,
-                    st.deg,
-                    sample_rate,
-                    window_size,
-                    hop_size,
-                    .{ .ref = st.ref_raw, .nf_ref = st.nf_ref, .deg = st.deg_raw, .nf_deg = st.nf_deg },
-                    &spec_jobs,
-                ) catch |e| {
-                    st.failed = e;
-                    continue;
-                };
-                st.realign_plan.?.deinit();
-                st.realign_plan = null;
-            }
-
-            // 7: realigned spectrograms, rescore.
-            try acc.spectrograms(spec_params, spec_jobs.items);
+            // 7: realign patches (lag, trim, spectrograms), rescore.
+            try acc.realign(spec_params, sample_rate, realign_jobs.items);
             for (states) |*st| {
                 if (!st.live()) continue;
                 if (st.realign) |*rp| realign_mod.finishRealign(NUM_BANDS, allocator, rp, &st.matches.?, sample_rate) catch |e| {
@@ -492,7 +458,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             options: Options,
             sample_rate: u32,
             frame_duration: f64,
-            lag_jobs: *std.ArrayList(accel.LagJob),
+            realign_jobs: *std.ArrayList(accel.RealignJob),
         ) !void {
             const allocator = self.allocator;
             st.matches = try dp.findOptimalDegPatchesFromSims(
@@ -507,12 +473,23 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
                 frame_duration,
             );
             if (options.disable_realignment) return;
-            st.realign_plan = try realign_mod.planRealign(allocator, &st.matches.?, pair.ref, st.deg, sample_rate, self.cached_window_size, lag_jobs);
+            st.realign = try realign_mod.planRealign(
+                NUM_BANDS,
+                allocator,
+                &st.matches.?,
+                pair.ref,
+                st.deg,
+                sample_rate,
+                self.cached_window_size,
+                self.cached_hop_size,
+                .{ .ref = st.ref_raw, .nf_ref = st.nf_ref, .deg = st.deg_raw, .nf_deg = st.nf_deg },
+                realign_jobs,
+            );
         }
     };
 }
 
-fn buildResult(
+pub fn buildResult(
     allocator: std.mem.Allocator,
     comptime NUM_BANDS: usize,
     matches: *const dp.Matches,

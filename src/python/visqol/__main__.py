@@ -34,6 +34,8 @@ def main() -> None:
     parser.add_argument("--no_alignment", action="store_true", help="Disable global alignment")
     parser.add_argument("--no_realignment", action="store_true", help="Disable fine realignment")
     parser.add_argument("--backend", default=None, help="Compute backend: cpu, metal, cuda, vulkan (extension)")
+    parser.add_argument("--precision", default="exact", choices=["exact", "balanced", "fast"],
+                        help="GPU arithmetic: exact (f64, the CPU's scores bit for bit), balanced (f32, two-float where f32 loses most) or fast (f32) (extension)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
@@ -51,6 +53,7 @@ def main() -> None:
             disable_global_alignment=args.no_alignment,
             disable_realignment=args.no_realignment,
             backend=args.backend,
+            precision=args.precision,
         )
         result = api.measure(args.reference, args.degraded)
     except (FileNotFoundError, ImportError, ValueError, RuntimeError) as exc:

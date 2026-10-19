@@ -12,12 +12,19 @@ float RO_operatorx5Bx5D_get_0(const RO_0 constant* this_0, uint i_0)
     return *(this_0->p_0 + i_0);
 }
 
-struct RO_1
+struct RefPatch_0
 {
-    uint device* p_0;
+    uint ref_off_0;
+    uint ref_frames_0;
+    uint ref_frame_0;
 };
 
-uint RO_operatorx5Bx5D_get_1(const RO_1 constant* this_1, uint i_1)
+struct RO_1
+{
+    RefPatch_0 device* p_0;
+};
+
+RefPatch_0 RO_operatorx5Bx5D_get_1(const RO_1 constant* this_1, uint i_1)
 {
     return *(this_1->p_0 + i_1);
 }
@@ -97,10 +104,9 @@ struct KernelContext_0
     int _S6 = int(_S5);
     uint _S7 = cell_0 % entryPointParams_1->patch_size_0;
     int _S8 = int(_S7);
-    uint _S9 = row_0 * 3U;
-    uint _S10 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9);
-    uint _S11 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 1U);
-    uint _S12 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, _S9 + 2U);
+    RefPatch_0 _S9 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, row_0);
+    RefPatch_0 _S10 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, row_0);
+    RefPatch_0 _S11 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->rows_0, row_0);
     int dr_1 = int(-1);
     float m_0 = 0.0f;
     float sq_0 = 0.0f;
@@ -113,7 +119,7 @@ struct KernelContext_0
         {
             break;
         }
-        int _S13 = clamp(_S6 + dr_1, int(0), int(entryPointParams_1->num_bands_0) - int(1));
+        int _S12 = clamp(_S6 + dr_1, int(0), int(entryPointParams_1->num_bands_0) - int(1));
         int dc_1 = int(-1);
         for(;;)
         {
@@ -124,10 +130,10 @@ struct KernelContext_0
             {
                 break;
             }
-            float _S14 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->spec_0, _S10 + uint(_S13) * _S11 + _S12 + uint(clamp(_S8 + dc_1, int(0), int(entryPointParams_1->patch_size_0) - int(1))));
+            float _S13 = RO_operatorx5Bx5D_get_0(&(&kernelContext_0)->entryPointParams_0->spec_0, _S9.ref_off_0 + uint(_S12) * _S10.ref_frames_0 + _S11.ref_frame_0 + uint(clamp(_S8 + dc_1, int(0), int(entryPointParams_1->patch_size_0) - int(1))));
             float w_0 = wgt_0(dr_1, dc_1);
-            float m_1 = m_0 + w_0 * _S14;
-            float sq_1 = sq_0 + w_0 * (_S14 * _S14);
+            float m_1 = m_0 + w_0 * _S13;
+            float sq_1 = sq_0 + w_0 * (_S13 * _S13);
             dc_1 = dc_1 + int(1);
             m_0 = m_1;
             sq_0 = sq_1;

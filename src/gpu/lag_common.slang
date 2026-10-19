@@ -2,14 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // `lag_max` then `lag_cands` reproduce `xcorr.refineLag`'s candidate set
-// on the device. Each thread scans LAG_CHUNK entries.
-//
-// params: (rows, 2) u32 — max_lag, slack (f32 bits).
+// on the device. Each thread scans `chunk` entries (dividing n).
 module lag_common;
 
 import zimt;
-
-public static const uint LAG_CHUNK = 64;
 
 public bool lag_valid(uint i, uint n, uint max_lag)
 {

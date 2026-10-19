@@ -12,12 +12,18 @@ float2 RO_operatorx5Bx5D_get_0(const RO_0 constant* this_0, uint i_0)
     return float2(*(this_0->p_0 + i_0)) ;
 }
 
-struct RO_1
+struct LagParams_0
 {
-    uint device* p_0;
+    uint max_lag_0;
+    float slack_0;
 };
 
-uint RO_operatorx5Bx5D_get_1(const RO_1 constant* this_1, uint i_1)
+struct RO_1
+{
+    LagParams_0 device* p_0;
+};
+
+LagParams_0 RO_operatorx5Bx5D_get_1(const RO_1 constant* this_1, uint i_1)
 {
     return *(this_1->p_0 + i_1);
 }
@@ -27,16 +33,16 @@ uint zimt_index_0(uint3 tid_0)
     return tid_0.x + tid_0.y * 2097152U;
 }
 
-bool lag_valid_0(uint i_2, uint n_0, uint max_lag_0)
+bool lag_valid_0(uint i_2, uint n_0, uint max_lag_1)
 {
     bool _S1;
-    if(i_2 <= max_lag_0)
+    if(i_2 <= max_lag_1)
     {
         _S1 = true;
     }
     else
     {
-        _S1 = i_2 >= (n_0 - max_lag_0);
+        _S1 = i_2 >= (n_0 - max_lag_1);
     }
     return _S1;
 }
@@ -58,6 +64,7 @@ struct EntryPointParams_0
     RO_1 params_0;
     RW_0 top_0;
     uint log2_n_1;
+    uint chunk_0;
     uint total_chunks_0;
 };
 
@@ -76,16 +83,16 @@ struct KernelContext_0
         return;
     }
     uint n_1 = 1U << ((&kernelContext_0)->entryPointParams_0->log2_n_1);
-    uint chunks_per_row_0 = n_1 / 64U;
+    uint chunks_per_row_0 = n_1 / (&kernelContext_0)->entryPointParams_0->chunk_0;
     uint row_1 = g_0 / chunks_per_row_0;
     uint _S3 = g_0 % chunks_per_row_0;
-    uint _S4 = _S3 * 64U;
-    uint _S5 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->params_0, row_1 * 2U);
+    uint _S4 = _S3 * (&kernelContext_0)->entryPointParams_0->chunk_0;
+    LagParams_0 _S5 = RO_operatorx5Bx5D_get_1(&(&kernelContext_0)->entryPointParams_0->params_0, row_1);
     uint m_0 = 0U;
     uint k_0 = 0U;
     for(;;)
     {
-        if(k_0 < 64U)
+        if(k_0 < ((&kernelContext_0)->entryPointParams_0->chunk_0))
         {
         }
         else
@@ -93,7 +100,7 @@ struct KernelContext_0
             break;
         }
         uint i_4 = _S4 + k_0;
-        if(lag_valid_0(i_4, n_1, _S5))
+        if(lag_valid_0(i_4, n_1, _S5.max_lag_0))
         {
             float _S6 = lag_abs_0(&(&kernelContext_0)->entryPointParams_0->corr_1, row_1, i_4, (&kernelContext_0)->entryPointParams_0->log2_n_1);
             m_0 = max(m_0, (as_type<uint>((_S6))));

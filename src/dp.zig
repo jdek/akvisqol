@@ -149,6 +149,25 @@ pub const SearchPlan = struct {
     }
 };
 
+/// How many patches `planSearch` keeps, by the same checks.
+pub fn searchPatches(ref_patch_indices: []const usize, num_frames_ref: usize, num_frames_deg: usize, patch_size: usize) Error!usize {
+    const num_patches = calcMaxNumPatches(ref_patch_indices, num_frames_deg, patch_size);
+    if (num_patches == 0 or num_frames_deg == 0) return Error.SignalsTooDifferent;
+    for (ref_patch_indices[0..num_patches]) |ri| {
+        if (ri + patch_size > num_frames_ref) return Error.SignalsTooDifferent;
+    }
+    return num_patches;
+}
+
+/// A patch's inclusive degraded-offset window.
+pub fn searchWindow(ref_index: usize, num_frames_deg: usize, patch_size: usize, search_window_radius: i32) struct { lo: usize, hi: usize } {
+    const search_window: i64 = @as(i64, search_window_radius) * @as(i64, @intCast(patch_size));
+    const last: i64 = @as(i64, @intCast(num_frames_deg)) - 1;
+    const r: i64 = @intCast(ref_index);
+    const lo: usize = @intCast(@max(0, r - search_window));
+    return .{ .lo = lo, .hi = @intCast(@max(@as(i64, @intCast(lo)), @min(r + search_window, last))) };
+}
+
 pub fn planSearch(
     allocator: std.mem.Allocator,
     ref_patch_indices: []const usize,
@@ -157,11 +176,7 @@ pub fn planSearch(
     patch_size: usize,
     search_window_radius: i32,
 ) !SearchPlan {
-    const num_patches = calcMaxNumPatches(ref_patch_indices, num_frames_deg, patch_size);
-    if (num_patches == 0 or num_frames_deg == 0) return Error.SignalsTooDifferent;
-    for (ref_patch_indices[0..num_patches]) |ri| {
-        if (ri + patch_size > num_frames_ref) return Error.SignalsTooDifferent;
-    }
+    const num_patches = try searchPatches(ref_patch_indices, num_frames_ref, num_frames_deg, patch_size);
     const search_window: i64 = @as(i64, search_window_radius) * @as(i64, @intCast(patch_size));
     const lo = try allocator.alloc(usize, num_patches);
     errdefer allocator.free(lo);
@@ -169,11 +184,10 @@ pub fn planSearch(
     errdefer allocator.free(hi);
     const sims = try allocator.alloc(f64, num_patches * num_frames_deg);
     @memset(sims, 0.0);
-    const last: i64 = @as(i64, @intCast(num_frames_deg)) - 1;
     for (ref_patch_indices[0..num_patches], lo, hi) |ri, *l, *h| {
-        const r: i64 = @intCast(ri);
-        l.* = @intCast(@max(0, r - search_window));
-        h.* = @intCast(@max(@as(i64, @intCast(l.*)), @min(r + search_window, last)));
+        const w = searchWindow(ri, num_frames_deg, patch_size, search_window_radius);
+        l.* = w.lo;
+        h.* = w.hi;
     }
     return .{
         .num_patches = num_patches,
