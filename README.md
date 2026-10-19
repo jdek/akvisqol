@@ -214,6 +214,28 @@ Batches spread over several GPU lanes (zimt devices: streams on CUDA,
 queues on Vulkan and Metal) so worker threads overlap their transfers and
 kernels; up to 4 on CUDA and 2 elsewhere, `VISQOL_GPU_LANES=N` to change.
 
+### Gradients
+
+`backend.Engine.measureBatchGrad` (Zig) also returns ∂moslqo/∂deg, each
+pair's gradient as long as its degraded signal, wherever the model runs on
+the device (any precision but exact on Metal). The discrete choices stay
+fixed, as almost everywhere they do: alignment lags, patch matches,
+realignment, and which cells the spectrogram floors and joint minimum
+select. The mapper's gradient comes from the host: analytic for the SVR
+and the exponential fit, central differences for the lattice. Back on the
+device, each stage reverses in the forward's precision: NSIM band
+statistics, spectrogram preparation (into the floors' and minimum's
+sources), and the gammatone filters, whose adjoint is the same cascade
+run backwards in time from state saved every 64 samples. The host then
+undoes the lag and SPL scaling, including the scale factor's own
+dependence on the signal.
+
+In f64 the gradient matches central differences of the score to ~1e-6;
+fast and balanced stay within ~1e-3 of it. It costs about one more fast
+forward pass: on the 130 pairs above (CUDA, without WAV decoding), score
+plus gradient takes 7.0 s exact, 1.3 s balanced and 0.60 s fast, against
+3.6 s, 1.0 s and 0.33 s for the score alone.
+
 ## Development
 
 ```sh

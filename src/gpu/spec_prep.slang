@@ -148,3 +148,103 @@ void spec_prep(
     for (uint i = lane; i < num_bands * rn; i += THREADS) out[ro + i] -= lo;
     for (uint i = lane; i < num_bands * dn; i += THREADS) out[dof + i] -= lo;
 }
+
+// Backward: ∂L/∂raw from ∂L/∂out, one thread group per row. The joint
+// minimum came from the first cell left at 0, each shared frame's floor
+// from its first loudest cell; cells under the floor pass their gradient
+// to it, and dB's slope is 10 / (x · ln 10) above -45 dB.
+
+static const real LN10 = real(2.302585092994045684);
+
+groupshared real g_part[THREADS];
+groupshared uint g_first[THREADS];
+
+real dBSlope(real x, real d)
+{
+    return x != real(0) && d > real(-45) ? real(10) / (x * LN10) : real(0);
+}
+
+[shader("compute")]
+[numthreads(THREADS, 1, 1)]
+void spec_prep_bwd(
+    uint3 tid: SV_DispatchThreadID,
+    uniform RO<SpecPair> rows,
+    uniform RO<real> raw,
+    uniform RO<real> out,
+    uniform RO<real> g_out,
+    uniform RW<real> g_raw,
+    uniform uint num_rows,
+    uniform uint num_bands)
+{
+    uint row = zimt_index(tid) / THREADS;
+    uint lane = tid.x % THREADS;
+    if (row >= num_rows) return;
+    uint ro = rows[row].ref_off;
+    uint rn = rows[row].ref_frames;
+    uint dof = rows[row].deg_off;
+    uint dn = rows[row].deg_frames;
+    uint nr = num_bands * rn;
+
+    real sum = 0;
+    uint first = 0xffffffffu;
+    for (uint i = lane; i < nr; i += THREADS) {
+        sum += g_out[ro + i];
+        if (out[ro + i] == real(0)) first = min(first, i);
+    }
+    for (uint i = lane; i < num_bands * dn; i += THREADS) {
+        sum += g_out[dof + i];
+        if (out[dof + i] == real(0)) first = min(first, nr + i);
+    }
+    g_part[lane] = sum;
+    g_first[lane] = first;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint s = THREADS / 2; s > 0; s >>= 1) {
+        if (lane < s) {
+            g_part[lane] += g_part[lane + s];
+            g_first[lane] = min(g_first[lane], g_first[lane + s]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+    real g_lo = -g_part[0];
+    uint at_min = g_first[0];
+
+    // Cell k of a column: ref bands, then deg bands.
+    uint shared = min(rn, dn);
+    for (uint c = lane; c < shared; c += THREADS) {
+        real top = -INF;
+        uint arg = 0;
+        for (uint k = 0; k < 2 * num_bands; k++) {
+            uint cell = k < num_bands ? ro + k * rn + c : dof + (k - num_bands) * dn + c;
+            real d = dB(raw[cell]);
+            if (d > top) {
+                top = d;
+                arg = k;
+            }
+        }
+        real floor = top - real(45);
+        real g_floor = 0;
+        real g_arg = 0;
+        for (uint k = 0; k < 2 * num_bands; k++) {
+            uint cell = k < num_bands ? ro + k * rn + c : dof + (k - num_bands) * dn + c;
+            uint lin = k < num_bands ? k * rn + c : nr + (k - num_bands) * dn + c;
+            real g = g_out[cell] + (lin == at_min ? g_lo : real(0));
+            real d = dB(raw[cell]);
+            if (d < floor) {
+                g_floor += g;
+                g = 0;
+            }
+            if (k == arg) g_arg = g;
+            else g_raw[cell] = g * dBSlope(raw[cell], d);
+        }
+        uint cell = arg < num_bands ? ro + arg * rn + c : dof + (arg - num_bands) * dn + c;
+        g_raw[cell] = (g_arg + g_floor) * dBSlope(raw[cell], top);
+    }
+    for (uint i = lane; i < nr; i += THREADS) {
+        if (i % rn < shared) continue;
+        g_raw[ro + i] = (g_out[ro + i] + (i == at_min ? g_lo : real(0))) * dBSlope(raw[ro + i], dB(raw[ro + i]));
+    }
+    for (uint i = lane; i < num_bands * dn; i += THREADS) {
+        if (i % dn < shared) continue;
+        g_raw[dof + i] = (g_out[dof + i] + (nr + i == at_min ? g_lo : real(0))) * dBSlope(raw[dof + i], dB(raw[dof + i]));
+    }
+}

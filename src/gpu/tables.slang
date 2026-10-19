@@ -185,3 +185,48 @@ public struct Realigned
     public uint deg_total;
     public uint accepted;
 }
+
+// A degraded frame in the gammatone backward: its first sample in the
+// signals (outside [lo, hi) read zero), its cells' gradients (band 0 at
+// `grad`, bands `stride` apart), and where its window of sample gradients
+// goes.
+public struct FrameGrad
+{
+    public int start;
+    public uint lo;
+    public uint hi;
+    public uint grad;
+    public uint stride;
+    public uint out;
+}
+
+// Frames `count` long, hop apart from `start`, their sample gradients a
+// window apart from `out`.
+public struct FrameRun
+{
+    public int start;
+    public uint count;
+    public uint out;
+}
+
+// A pair's aligned deg, signals [start, start + len): its gradient at
+// `out`, gathered from runs `first_run ..+ runs`.
+public struct SignalGrad
+{
+    public uint start;
+    public uint len;
+    public uint first_run;
+    public uint runs;
+    public uint out;
+}
+
+// A prepared spectrogram (bands, frames at `off`) gathering the patch
+// gradients of rows `first ..+ count` on `side` (0: ref, 1: deg).
+public struct SpecGather
+{
+    public uint off;
+    public uint frames;
+    public uint side;
+    public uint first;
+    public uint count;
+}

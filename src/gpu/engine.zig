@@ -66,14 +66,15 @@ pub const Engine = struct {
 
     pub fn measure(self: *Engine, ref: []const f64, deg: []const f64, sample_rate: u32) !visqol.Result {
         var out: [1]anyerror!visqol.Result = undefined;
-        try self.score(&self.main, &.{.{ .ref = ref, .deg = deg }}, sample_rate, &out);
+        try self.score(&self.main, &.{.{ .ref = ref, .deg = deg }}, sample_rate, &out, null);
         return out[0];
     }
 
     /// On the device where it can (`pipeline.applies`), else the CPU model
-    /// with the GPU as its `Accelerator`.
-    fn score(self: *Engine, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result) !void {
-        if (pipeline.applies(self.gpu_accel)) return pipeline.measureBatch(self.gpu_accel, v, pairs, sample_rate, results);
+    /// with the GPU as its `Accelerator` (no gradients there).
+    fn score(self: *Engine, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
+        if (pipeline.applies(self.gpu_accel)) return pipeline.measureBatch(self.gpu_accel, v, pairs, sample_rate, results, grads);
+        if (grads != null) return error.Unsupported;
         return v.measureBatch(pairs, sample_rate, self.gpu_accel.accelerator(), results);
     }
 
@@ -81,6 +82,7 @@ pub const Engine = struct {
         engine: *Engine,
         pairs: []const visqol.Pair,
         results: []anyerror!visqol.Result,
+        grads: ?[]const []f64,
         sample_rate: u32,
         chunk: usize,
         next: std.atomic.Value(usize) = .init(0),
@@ -93,7 +95,8 @@ pub const Engine = struct {
             const lo = c * shared.chunk;
             if (lo >= shared.pairs.len) return;
             const hi = @min(lo + shared.chunk, shared.pairs.len);
-            shared.engine.score(v, shared.pairs[lo..hi], shared.sample_rate, shared.results[lo..hi]) catch |e| {
+            const grads = if (shared.grads) |g| g[lo..hi] else null;
+            shared.engine.score(v, shared.pairs[lo..hi], shared.sample_rate, shared.results[lo..hi], grads) catch |e| {
                 for (shared.results[lo..hi]) |*r| r.* = e;
                 shared.failed = e;
             };
@@ -120,13 +123,24 @@ pub const Engine = struct {
     /// Lock-step chunks, up to `num_threads` concurrently, so CPU stages
     /// use every core while the accelerator batches kernels per chunk.
     pub fn measureBatch(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result) !void {
+        return self.batch(pairs, sample_rate, num_threads, results, null);
+    }
+
+    /// `measureBatch`, with ∂moslqo/∂deg of each pair into `grads` (each its
+    /// deg's length; `pipeline.measureBatch` has the details).
+    pub fn measureBatchGrad(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result, grads: []const []f64) !void {
+        if (!pipeline.applies(self.gpu_accel)) return error.Unsupported;
+        return self.batch(pairs, sample_rate, num_threads, results, grads);
+    }
+
+    fn batch(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
         if (pairs.len == 0) return;
         const cpus = std.Thread.getCpuCount() catch 1;
         const want: usize = if (num_threads == 0) cpus else num_threads;
         const chunk = std.math.clamp(std.math.divCeil(usize, pairs.len, want) catch 1, 1, MAX_CHUNK);
         const chunks = std.math.divCeil(usize, pairs.len, chunk) catch unreachable;
         const n_threads = @max(1, @min(want, chunks));
-        var shared: Shared = .{ .engine = self, .pairs = pairs, .results = results, .sample_rate = sample_rate, .chunk = chunk };
+        var shared: Shared = .{ .engine = self, .pairs = pairs, .results = results, .grads = grads, .sample_rate = sample_rate, .chunk = chunk };
         const threads = try self.allocator.alloc(std.Thread, n_threads - 1);
         defer self.allocator.free(threads);
         var spawned: usize = 0;
@@ -198,6 +212,12 @@ pub const GpuAccel = struct {
         ref_terms_f32: zimt.Kernel(kernels.ref_terms_f32),
         nsim_table_f32: zimt.Kernel(kernels.nsim_table_f32),
         nsim_bands_f32: zimt.Kernel(kernels.nsim_bands_f32),
+        spec_prep_bwd_f32: zimt.Kernel(kernels.spec_prep_bwd_f32),
+        nsim_bands_bwd_f32: zimt.Kernel(kernels.nsim_bands_bwd_f32),
+        nsim_cells_bwd_f32: zimt.Kernel(kernels.nsim_cells_bwd_f32),
+        spec_grad_f32: zimt.Kernel(kernels.spec_grad_f32),
+        gammatone_bwd_f32: zimt.Kernel(kernels.gammatone_bwd_f32),
+        signal_grad_f32: zimt.Kernel(kernels.signal_grad_f32),
         dp_search_f32: zimt.Kernel(kernels.dp_search_f32),
         match_rows_f32: zimt.Kernel(kernels.match_rows_f32),
         match_finalize_f32: zimt.Kernel(kernels.match_finalize_f32),
@@ -235,6 +255,12 @@ pub const GpuAccel = struct {
         ref_terms_f64: zimt.Kernel(kernels.ref_terms_f64),
         nsim_table_f64: zimt.Kernel(kernels.nsim_table_f64),
         nsim_bands_f64: zimt.Kernel(kernels.nsim_bands_f64),
+        spec_prep_bwd_f64: zimt.Kernel(kernels.spec_prep_bwd_f64),
+        nsim_bands_bwd_f64: zimt.Kernel(kernels.nsim_bands_bwd_f64),
+        nsim_cells_bwd_f64: zimt.Kernel(kernels.nsim_cells_bwd_f64),
+        spec_grad_f64: zimt.Kernel(kernels.spec_grad_f64),
+        gammatone_bwd_f64: zimt.Kernel(kernels.gammatone_bwd_f64),
+        signal_grad_f64: zimt.Kernel(kernels.signal_grad_f64),
         dp_search_f64: zimt.Kernel(kernels.dp_search_f64),
         match_rows_f64: zimt.Kernel(kernels.match_rows_f64),
         match_finalize_f64: zimt.Kernel(kernels.match_finalize_f64),

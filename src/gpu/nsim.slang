@@ -414,3 +414,211 @@ void nsim_bands(
     stats[o + 1] = dev;
     stats[o + 2] = deg_mean;
 }
+
+// Backward
+//
+// simCell about the centre values (constants: with Σw = 1 the means don't
+// depend on them), and its adjoint into gr, gd. prod <= 0 takes c3, so a
+// flat window's root contributes no slope. By hand: Slang's bwd_diff of
+// this gets ∂/∂sds wrong where sqrt(srs·sds) is small (slangc 2026.19).
+struct SimTerms
+{
+    real er[9], ed[9];
+    real sr, sd, mr, md, srs, sds, srd, prod;
+
+    __init(real r[9], real d[9], real w[9])
+    {
+        sr = 0; sd = 0;
+        real qr = 0, qd = 0, qrd = 0;
+        for (uint k = 0; k < 9; k++) {
+            er[k] = r[k] - r[4];
+            ed[k] = d[k] - d[4];
+            sr += w[k] * er[k];
+            sd += w[k] * ed[k];
+            qr += w[k] * (er[k] * er[k]);
+            qd += w[k] * (ed[k] * ed[k]);
+            qrd += w[k] * (er[k] * ed[k]);
+        }
+        mr = r[4] + sr;
+        md = d[4] + sd;
+        srs = qr - sr * sr;
+        sds = qd - sd * sd;
+        srd = qrd - sr * sd;
+        prod = srs * sds;
+    }
+
+    real denom(real c3) { return prod > real(0) ? sqrt(prod) + c3 : c3; }
+
+    real sim(real c1, real c3)
+    {
+        real intensity = (real(2) * (mr * md) + c1) / (mr * mr + md * md + c1);
+        return intensity * ((srd + c3) / denom(c3));
+    }
+}
+
+void simBwd(real r[9], real d[9], real w[9], real c1, real c3, real g, out real gr[9], out real gd[9])
+{
+    SimTerms t = SimTerms(r, d, w);
+    real a = real(2) * (t.mr * t.md) + c1;
+    real bb = t.mr * t.mr + t.md * t.md + c1;
+    real den = t.denom(c3);
+    real n = t.srd + c3;
+    real g_i = g * (n / den);
+    real g_s = g * (a / bb);
+    real g_srd = g_s / den;
+    real g_den = -g_s * n / (den * den);
+    real g_prod = t.prod > real(0) ? g_den / (real(2) * sqrt(t.prod)) : real(0);
+    real g_srs = g_prod * t.sds;
+    real g_sds = g_prod * t.srs;
+    real g_a = g_i / bb;
+    real g_b = -g_i * a / (bb * bb);
+    real g_mr = g_a * real(2) * t.md + g_b * real(2) * t.mr;
+    real g_md = g_a * real(2) * t.mr + g_b * real(2) * t.md;
+    real g_sr = g_mr - real(2) * t.sr * g_srs - t.sd * g_srd;
+    real g_sd = g_md - real(2) * t.sd * g_sds - t.sr * g_srd;
+    for (uint k = 0; k < 9; k++) {
+        gr[k] = w[k] * (g_sr + real(2) * t.er[k] * g_srs + t.ed[k] * g_srd);
+        gd[k] = w[k] * (g_sd + real(2) * t.ed[k] * g_sds + t.er[k] * g_srd);
+    }
+}
+
+// `nsim_bands`' backward per (row, band, col): ∂L/∂ of the cell's 3x3
+// window, from ∂L/∂(mean, stddev) of its band (`g_stats`, as `stats`).
+// cells: (rows, num_bands, max_cols, 18) — ref then deg, tap order.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void nsim_bands_bwd(
+    uint3 tid: SV_DispatchThreadID,
+    uniform RO<real> ref_spec,
+    uniform RO<real> deg_spec,
+    uniform RO<real> window,
+    uniform RO<PatchPair> rows,
+    uniform RO<uint> active,
+    uniform RO<real> stats,
+    uniform RO<real> g_stats,
+    uniform RW<real> cells,
+    uniform uint num_rows,
+    uniform uint num_bands,
+    uniform uint max_cols,
+    uniform real c1,
+    uniform real c3)
+{
+    uint id = zimt_index(tid);
+    uint row = id / (num_bands * max_cols);
+    uint b = (id / max_cols) % num_bands;
+    uint c = id % max_cols;
+    if (row >= num_rows || active[row] == 0) return;
+    PatchPair pp = rows[row];
+    uint n = pp.cols;
+    if (c >= n) return;
+    uint o = (row * num_bands + b) * 3;
+    real g_mean = g_stats[o];
+    real g_dev = g_stats[o + 1];
+
+    real w[9], r[9], d[9];
+    for (int dr = -1; dr <= 1; dr++) {
+        uint rr = uint(clamp(int(b) + dr, 0, int(num_bands) - 1));
+        for (int dc = -1; dc <= 1; dc++) {
+            uint cc = uint(clamp(int(c) + dc, 0, int(n) - 1));
+            uint k = uint((dr + 1) * 3 + dc + 1);
+            w[k] = window[k];
+            r[k] = refAt(ref_spec, pp.ref_off, pp.ref_frames, pp.ref_frame, rr, cc);
+            d[k] = degAt(deg_spec, pp.deg_off, pp.deg_frames, pp.deg_frame, rr, cc);
+        }
+    }
+    real g = g_mean / real(n);
+    real dev = stats[o + 1];
+    if (n > 1 && dev > real(0) && g_dev != real(0)) {
+        real s = SimTerms(r, d, w).sim(c1, c3);
+        g += g_dev * (s - stats[o]) / ((real(n) - real(1)) * dev);
+    }
+    real gr[9], gd[9];
+    simBwd(r, d, w, c1, c3, g, gr, gd);
+    uint at = ((row * num_bands + b) * max_cols + c) * 18;
+    for (uint k = 0; k < 9; k++) {
+        cells[at + k] = gr[k];
+        cells[at + 9 + k] = gd[k];
+    }
+}
+
+// ∂L/∂ each patch cell per (row, side, band, col): the windows clamped
+// onto it, and on the deg side the band energy's share.
+// patch_grad: (rows, 2, num_bands, max_cols).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void nsim_cells_bwd(
+    uint3 tid: SV_DispatchThreadID,
+    uniform RO<PatchPair> rows,
+    uniform RO<uint> active,
+    uniform RO<real> g_stats,
+    uniform RO<real> cells,
+    uniform RW<real> patch_grad,
+    uniform uint num_rows,
+    uniform uint num_bands,
+    uniform uint max_cols)
+{
+    uint id = zimt_index(tid);
+    uint row = id / (2 * num_bands * max_cols);
+    uint side = (id / (num_bands * max_cols)) % 2;
+    uint b = (id / max_cols) % num_bands;
+    uint c = id % max_cols;
+    if (row >= num_rows) return;
+    PatchPair pp = rows[row];
+    uint n = pp.cols;
+    real sum = 0;
+    if (active[row] != 0 && c < n) {
+        // Sources within one cell whose clamped taps land here.
+        for (int sb = int(b) - 1; sb <= int(b) + 1; sb++) {
+            if (sb < 0 || sb >= int(num_bands)) continue;
+            for (int sc = int(c) - 1; sc <= int(c) + 1; sc++) {
+                if (sc < 0 || sc >= int(n)) continue;
+                uint at = ((row * num_bands + uint(sb)) * max_cols + uint(sc)) * 18 + side * 9;
+                for (int dr = -1; dr <= 1; dr++) {
+                    if (clamp(sb + dr, 0, int(num_bands) - 1) != int(b)) continue;
+                    for (int dc = -1; dc <= 1; dc++) {
+                        if (clamp(sc + dc, 0, int(n) - 1) != int(c)) continue;
+                        sum += cells[at + uint((dr + 1) * 3 + dc + 1)];
+                    }
+                }
+            }
+        }
+        if (side == 1) sum += g_stats[(row * num_bands + b) * 3 + 2] / real(n);
+    }
+    patch_grad[((row * 2 + side) * num_bands + b) * max_cols + c] = sum;
+}
+
+// Each prepared spectrogram's gradient, per cell: its rows' patch
+// gradients covering it (deg frames past `deg_frames` aren't cells).
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void spec_grad(
+    uint3 tid: SV_DispatchThreadID,
+    uniform RO<SpecGather> specs,
+    uniform RO<PatchPair> rows,
+    uniform RO<uint> active,
+    uniform RO<real> patch_grad,
+    uniform RW<real> out,
+    uniform uint num_specs,
+    uniform uint max_cells,
+    uniform uint num_bands,
+    uniform uint max_cols)
+{
+    uint id = zimt_index(tid);
+    uint s = id / max_cells;
+    uint cell = id % max_cells;
+    if (s >= num_specs) return;
+    SpecGather sg = specs[s];
+    if (cell >= num_bands * sg.frames) return;
+    uint b = cell / sg.frames;
+    uint f = cell % sg.frames;
+    real sum = 0;
+    for (uint i = 0; i < sg.count; i++) {
+        uint row = sg.first + i;
+        if (active[row] == 0) continue;
+        PatchPair pp = rows[row];
+        uint first = sg.side == 0 ? pp.ref_frame : pp.deg_frame;
+        if (f < first || f - first >= pp.cols) continue;
+        sum += patch_grad[((row * 2 + sg.side) * num_bands + b) * max_cols + f - first];
+    }
+    out[sg.off + cell] = sum;
+}

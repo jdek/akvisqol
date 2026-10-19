@@ -96,6 +96,57 @@ pub const QualityMapper = union(enum) {
             },
         }
     }
+
+    /// ∂predict/∂ each feature into `grads` (fvnsim, fvnsim10, fstdnsim,
+    /// fvdegenergy), zero where the score is clamped. The lattice by
+    /// central differences: it is piecewise linear and evaluates in f32.
+    pub fn gradient(self: *const QualityMapper, features: [4][]const f64, grads: [4][]f64) !void {
+        for (grads) |g| @memset(g, 0);
+        switch (self.*) {
+            .svr => |m| {
+                const x = features[0];
+                const y = m.predict(x);
+                if (y <= 1.0 or y >= 5.0) return;
+                for (0..m.numSupportVectors()) |i| {
+                    const sv = m.support_vectors[i * m.num_features ..][0..m.num_features];
+                    var dist: f64 = 0;
+                    for (sv, x) |a, b| dist += (a - b) * (a - b);
+                    const k = m.coefficients[i] * @exp(-m.gamma * dist) * -2.0 * m.gamma;
+                    for (grads[0], sv, x) |*g, a, b| g.* += k * (b - a);
+                }
+            },
+            .speech_exponential => |e| {
+                const mos = try self.predict(features[0], features[1], features[2], features[3]);
+                if (mos <= 1.0 or mos >= 5.0) return;
+                const b = 0.0154302525;
+                const x0 = -361.063949;
+                var sum: f64 = 0.0;
+                for (features[0]) |x| sum += x;
+                const n: f64 = @floatFromInt(features[0].len);
+                const scale: f64 = if (e.scale_to_max_mos) @as(f32, 1.245063) else 1.0;
+                const g = scale * b * @exp(b * (sum / n - x0)) / n;
+                @memset(grads[0], g);
+            },
+            .lattice => |*m| {
+                var buf: [4][constants.NUM_BANDS_SPEECH]f64 = undefined;
+                var x: [4][]f64 = undefined;
+                for (&x, &buf, features) |*xi, *bi, f| {
+                    xi.* = bi[0..f.len];
+                    @memcpy(xi.*, f);
+                }
+                for (0..4) |fi| for (0..x[fi].len) |b| {
+                    const v = x[fi][b];
+                    const h = 1e-3 * @max(1.0, @abs(v));
+                    x[fi][b] = v + h;
+                    const up = try m.predict(x[0], x[1], x[2], x[3]);
+                    x[fi][b] = v - h;
+                    const down = try m.predict(x[0], x[1], x[2], x[3]);
+                    x[fi][b] = v;
+                    grads[fi][b] = (up - down) / (2 * h);
+                };
+            },
+        }
+    }
 };
 
 /// Mirrors upstream `PatchSimilarityMsg`.
@@ -603,6 +654,98 @@ pub fn buildResult(
         .alignment_lag_s = lag_s,
         .allocator = allocator,
     };
+}
+
+/// ∂moslqo/∂ each match's per-band (mean, stddev, deg energy) as
+/// `buildResult` maps them, into `out` (matches, bands, 3). Zero where the
+/// score is pinned (vnsim < 0.15, or clamped by the mapper).
+pub fn buildResultGrad(
+    allocator: std.mem.Allocator,
+    comptime NUM_BANDS: usize,
+    matches: *const dp.Matches,
+    frame_duration: f64,
+    mapper: *const QualityMapper,
+    out: []f64,
+) !void {
+    const items = matches.items;
+    const n = items.len;
+    const n_f: f64 = @floatFromInt(n);
+    std.debug.assert(out.len == n * NUM_BANDS * 3);
+    @memset(out, 0);
+    var fvnsim: [NUM_BANDS]f64 = @splat(0);
+    var fvnsim10: [NUM_BANDS]f64 = undefined;
+    var fstdnsim: [NUM_BANDS]f64 = undefined;
+    var fvdegenergy: [NUM_BANDS]f64 = @splat(0);
+    for (items) |m| for (0..NUM_BANDS) |b| {
+        fvnsim[b] += m.freq_band_means[b];
+        fvdegenergy[b] += m.freq_band_deg_energy[b];
+    };
+    for (&fvnsim, &fvdegenergy) |*x, *e| {
+        x.* /= n_f;
+        e.* /= n_f;
+    }
+    var sum: f64 = 0;
+    for (fvnsim) |x| sum += x;
+    if (sum / @as(f64, @floatFromInt(NUM_BANDS)) < 0.15) return;
+
+    // fvnsim10's patches per band: the k lowest means, first by index on ties.
+    const k: usize = @max(1, @as(usize, @intFromFloat(@trunc(n_f * 0.10))));
+    const lowest = try allocator.alloc(usize, NUM_BANDS * n);
+    defer allocator.free(lowest);
+    for (0..NUM_BANDS) |b| {
+        const idx = lowest[b * n ..][0..n];
+        for (idx, 0..) |*x, i| x.* = i;
+        const Ctx = struct {
+            items: []const dp.Match,
+            b: usize,
+            fn lt(c: @This(), x: usize, y: usize) bool {
+                const mx = c.items[x].freq_band_means[c.b];
+                const my = c.items[y].freq_band_means[c.b];
+                return mx < my or (mx == my and x < y);
+            }
+        };
+        std.mem.sort(usize, idx, Ctx{ .items = items, .b = b }, Ctx.lt);
+        var acc: f64 = 0;
+        for (idx[0..k]) |i| acc += items[i].freq_band_means[b];
+        fvnsim10[b] = acc / @as(f64, @floatFromInt(k));
+    }
+
+    const counts = try allocator.alloc(f64, n);
+    defer allocator.free(counts);
+    var total: f64 = 0;
+    for (items, counts) |m, *fc| {
+        const frames: i64 = @intFromFloat(@ceil((m.ref_patch_end_time - m.ref_patch_start_time) / frame_duration));
+        fc.* = @floatFromInt(frames);
+        total += fc.*;
+    }
+    var variance: [NUM_BANDS]f64 = @splat(0);
+    for (0..NUM_BANDS) |b| {
+        var c: f64 = 0;
+        for (items, counts) |m, fc| {
+            const dev = m.freq_band_stddevs[b];
+            const mean = m.freq_band_means[b];
+            c += (fc - 1.0) * dev * dev;
+            c += fc * mean * mean;
+        }
+        variance[b] = (c - fvnsim[b] * fvnsim[b] * total) / (total - 1.0);
+        fstdnsim[b] = if (variance[b] < 0.0) 0.0 else @sqrt(variance[b]);
+    }
+
+    var g: [4][NUM_BANDS]f64 = undefined;
+    try mapper.gradient(.{ &fvnsim, &fvnsim10, &fstdnsim, &fvdegenergy }, .{ &g[0], &g[1], &g[2], &g[3] });
+
+    for (0..NUM_BANDS) |b| {
+        // fstdnsim = sqrt(v): v's slope in each mean and stddev, and through fvnsim.
+        const g_v = if (variance[b] > 0.0) g[2][b] / (2.0 * fstdnsim[b]) else 0.0;
+        const g_fvnsim = g[0][b] - g_v * 2.0 * fvnsim[b] * total / (total - 1.0);
+        for (items, counts, 0..) |m, fc, i| {
+            const o = (i * NUM_BANDS + b) * 3;
+            out[o] += g_fvnsim / n_f + g_v * 2.0 * fc * m.freq_band_means[b] / (total - 1.0);
+            out[o + 1] += g_v * 2.0 * (fc - 1.0) * m.freq_band_stddevs[b] / (total - 1.0);
+            out[o + 2] += g[3][b] / n_f;
+        }
+        for (lowest[b * n ..][0..k]) |i| out[(i * NUM_BANDS + b) * 3] += g[1][b] / @as(f64, @floatFromInt(k));
+    }
 }
 
 test "Visqol: contrabassoon48 matches reference per-band NSIM" {

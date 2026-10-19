@@ -80,6 +80,17 @@ pub const Engine = union(Kind) {
             inline else => |*e| e.measureBatch(pairs, sample_rate, num_threads, results),
         };
     }
+
+    /// `measureBatch`, with ∂moslqo/∂deg of each pair into `grads` (each as
+    /// long as its deg), the discrete choices (lags, matches, realignment)
+    /// held fixed. GPU backends that score on the device only (not exact
+    /// without f64); `error.Unsupported` elsewhere.
+    pub fn measureBatchGrad(self: *Engine, pairs: []const Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result, grads: []const []f64) !void {
+        return switch (self.*) {
+            .cpu => error.Unsupported,
+            inline else => |*e| e.measureBatchGrad(pairs, sample_rate, num_threads, results, grads),
+        };
+    }
 };
 
 const GpuEngine = if (build_options.metal or build_options.cuda or build_options.vulkan)
@@ -94,6 +105,9 @@ else
             return Error.BackendUnavailable;
         }
         pub fn measureBatch(_: *GpuEngine, _: []const Pair, _: u32, _: u32, _: []anyerror!visqol.Result) !void {
+            return Error.BackendUnavailable;
+        }
+        pub fn measureBatchGrad(_: *GpuEngine, _: []const Pair, _: u32, _: u32, _: []anyerror!visqol.Result, _: []const []f64) !void {
             return Error.BackendUnavailable;
         }
     };

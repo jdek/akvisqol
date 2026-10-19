@@ -3,6 +3,11 @@
 
 //! Zig implementation of Google's ViSQOL.
 pub const visqol = @import("visqol.zig");
+/// CPU and GPU engines (`backend.Engine`), with gradients on the GPU.
+pub const backend = @import("backend.zig");
+/// Global alignment (`realign.alignAndTruncate`, with an `xcorr.Cache`).
+pub const realign = @import("realign.zig");
+pub const xcorr = @import("xcorr.zig");
 pub const audio = @import("audio.zig");
 pub const svr = @import("svr.zig");
 pub const lattice = @import("lattice.zig");
