@@ -103,7 +103,7 @@ pub fn fill(_: *zimt.Device, _: zimt.Span) !void {
 }
 
 /// The argument block binds at index 0 (bindgen checks).
-pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args) !void {
+pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args(.metal)) !void {
     const n_buf = comptime blk: {
         var n: usize = 0;
         for (K.params) |p| n += @intFromBool(p.kind == .buffer);

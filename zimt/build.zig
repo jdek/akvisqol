@@ -109,6 +109,8 @@ const test_entries = [_]Entry{
     .{ .name = "compact", .source = "indirect" },
     .{ .name = "plan", .source = "indirect" },
     .{ .name = "scale_listed", .source = "indirect" },
+    .{ .name = "daxpy", .float64 = true },
+    .{ .name = "gather" },
 };
 
 /// Null until the lazy dependency is fetched.
@@ -140,6 +142,17 @@ pub const Entry = struct {
     name: []const u8,
     source: ?[]const u8 = null,
     entry: ?[]const u8 = null,
+    /// Uses `double`: no Metal build; loads where `Device.float64`.
+    float64: bool = false,
+    /// Preprocessor definitions (`NAME=value`), to build one source twice.
+    defines: []const []const u8 = &.{},
+    /// IEEE operation by operation: no contraction into FMAs (`-fp-mode precise`).
+    precise: bool = false,
+
+    fn flags(e: Entry, b: *std.Build, run: *std.Build.Step.Run) void {
+        for (e.defines) |d| run.addArg(b.fmt("-D{s}", .{d}));
+        if (e.precise) run.addArgs(&.{ "-fp-mode", "precise" });
+    }
 
     fn file(e: Entry) []const u8 {
         return e.source orelse e.name;
@@ -183,11 +196,11 @@ fn kernelsModule(b: *std.Build, bindgen: *std.Build.Step.Compile, zimt: *std.Bui
     for (k.entries) |entry| {
         const e = entry.name;
         gen.addArg(e);
-        gen.addFileArg(k.generated.path(b, b.fmt("{s}.json", .{e})));
+        if (entry.float64) gen.addArg("-") else gen.addFileArg(k.generated.path(b, b.fmt("{s}.json", .{e})));
         gen.addFileArg(k.generated.path(b, b.fmt("{s}.spirv.json", .{e})));
         gen.addFileArg(k.generated.path(b, b.fmt("{s}.spv", .{e})));
         if (k.vulkan) _ = wf.addCopyFile(k.generated.path(b, b.fmt("{s}.spv", .{e})), b.fmt("{s}.spv", .{e}));
-        if (k.metal) {
+        if (k.metal and !entry.float64) {
             const run = b.addSystemCommand(&(xcrun_metal ++ .{
                 if (k.fast_math) "-ffast-math" else "-fno-fast-math",
                 b.fmt("-mmacosx-version-min={s}", .{k.macos_min}),
@@ -199,7 +212,9 @@ fn kernelsModule(b: *std.Build, bindgen: *std.Build.Step.Compile, zimt: *std.Bui
             _ = wf.addCopyFile(lib, b.fmt("{s}.metallib", .{e}));
         }
         if (k.cuda) {
-            const run = b.addSystemCommand(&.{ "slangc", "-target", "ptx", "-line-directive-mode", "none", "-entry", entry.entryPoint(), "-I" });
+            const run = b.addSystemCommand(&.{ "slangc", "-target", "ptx", "-line-directive-mode", "none", "-entry", entry.entryPoint() });
+            entry.flags(b, run);
+            run.addArg("-I");
             run.addDirectoryArg(sources);
             run.addArg("-I");
             run.addDirectoryArg(slang_dir);
@@ -232,19 +247,25 @@ pub fn addRegenerate(b: *std.Build, r: Regenerate) *std.Build.Step {
     const slang_dir = if (r.zimt) |d| d.path("src/slang") else b.path("src/slang");
     for (r.entries) |entry| {
         const e = entry.name;
-        const run = b.addSystemCommand(&.{ "slangc", "-target", "metal", "-line-directive-mode", "none", "-entry", entry.entryPoint(), "-I" });
-        run.addDirectoryArg(sources);
-        run.addArg("-I");
-        run.addDirectoryArg(slang_dir);
-        run.addFileArg(sources.path(b, b.fmt("{s}.slang", .{entry.file()})));
-        run.addArg("-o");
-        const msl = run.addOutputFileArg(b.fmt("{s}.metal", .{e}));
-        run.addArg("-reflection-json");
-        const json = run.addOutputFileArg(b.fmt("{s}.json", .{e}));
-        update.addCopyFileToSource(msl, b.fmt("{s}/{s}.metal", .{ r.generated_dir, e }));
-        update.addCopyFileToSource(json, b.fmt("{s}/{s}.json", .{ r.generated_dir, e }));
+        if (!entry.float64) {
+            const run = b.addSystemCommand(&.{ "slangc", "-target", "metal", "-line-directive-mode", "none", "-entry", entry.entryPoint() });
+            entry.flags(b, run);
+            run.addArg("-I");
+            run.addDirectoryArg(sources);
+            run.addArg("-I");
+            run.addDirectoryArg(slang_dir);
+            run.addFileArg(sources.path(b, b.fmt("{s}.slang", .{entry.file()})));
+            run.addArg("-o");
+            const msl = run.addOutputFileArg(b.fmt("{s}.metal", .{e}));
+            run.addArg("-reflection-json");
+            const json = run.addOutputFileArg(b.fmt("{s}.json", .{e}));
+            update.addCopyFileToSource(msl, b.fmt("{s}/{s}.metal", .{ r.generated_dir, e }));
+            update.addCopyFileToSource(json, b.fmt("{s}/{s}.json", .{ r.generated_dir, e }));
+        }
 
-        const vk = b.addSystemCommand(&.{ "slangc", "-target", "spirv", "-line-directive-mode", "none", "-entry", entry.entryPoint(), "-I" });
+        const vk = b.addSystemCommand(&.{ "slangc", "-target", "spirv", "-line-directive-mode", "none", "-entry", entry.entryPoint() });
+        entry.flags(b, vk);
+        vk.addArg("-I");
         vk.addDirectoryArg(sources);
         vk.addArg("-I");
         vk.addDirectoryArg(slang_dir);
@@ -253,7 +274,7 @@ pub fn addRegenerate(b: *std.Build, r: Regenerate) *std.Build.Step {
         const spv = vk.addOutputFileArg(b.fmt("{s}.spv", .{e}));
         vk.addArg("-reflection-json");
         const vk_json = vk.addOutputFileArg(b.fmt("{s}.spirv.json", .{e}));
-        const val = b.addSystemCommand(&.{ "spirv-val", "--target-env", "vulkan1.2" });
+        const val = b.addSystemCommand(&.{ "spirv-val", "--target-env", "vulkan1.2", "--scalar-block-layout" });
         val.addFileArg(spv);
         update.step.dependOn(&val.step);
         update.addCopyFileToSource(spv, b.fmt("{s}/{s}.spv", .{ r.generated_dir, e }));

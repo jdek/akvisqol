@@ -42,6 +42,7 @@ pub fn open(d: *zimt.Device) !void {
     // Non-blocking: no implicit sync with the legacy default stream.
     try call(api.cuStreamCreate(&st.stream, c.CU_STREAM_NON_BLOCKING));
     d.state = st;
+    d.float64 = true;
     if (api.cuDeviceGetName(&d.name_buf, d.name_buf.len, st.device) == c.CUDA_SUCCESS)
         d.name_len = std.mem.indexOfScalar(u8, &d.name_buf, 0) orelse d.name_buf.len;
 }
@@ -133,7 +134,7 @@ pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
 
 /// Each parameter points into the packed block. Indirect dispatches launch
 /// `max` groups: the driver API has no indirect launch.
-pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args) !void {
+pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args(.cuda)) !void {
     try bind(d);
     var bytes align(8) = zimt.packArgs(K, args);
     var ptrs: [@max(K.params.len, 1)]?*anyopaque = undefined;

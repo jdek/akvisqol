@@ -3,7 +3,8 @@
 
 //! Generates Zig kernel bindings from the Metal and SPIR-V reflections of
 //! `slangc -reflection-json`, which must agree, and the SPIR-V itself:
-//! reflection names a pointer's element type but not its shape.
+//! reflection names a pointer's element type but not its shape. Kernels
+//! using `double` have no Metal reflection (`-`).
 const std = @import("std");
 const Value = std.json.Value;
 
@@ -12,7 +13,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
     if (args.len < 5 or (args.len - 5) % 4 != 0) {
-        std.log.err("usage: zimt-bindgen <out.zig> <metal:0|1> <ptx:0|1> <spirv:0|1> (<entry> <metal.json> <spirv.json> <spv>)...", .{});
+        std.log.err("usage: zimt-bindgen <out.zig> <metal:0|1> <ptx:0|1> <spirv:0|1> (<entry> <metal.json|-> <spirv.json> <spv>)...", .{});
         std.process.exit(2);
     }
     const embed: Embed = .{
@@ -28,26 +29,36 @@ pub fn main(init: std.process.Init) !void {
         \\const zimt = @import("zimt");
         \\
     );
+    var structs: Structs = .empty;
     var i: usize = 5;
     while (i < args.len) : (i += 4) {
         const entry = args[i];
-        var docs: [2]Value = undefined;
+        var docs: [2]?Value = undefined;
         for (&docs, args[i + 1 ..][0..2]) |*doc, path| {
+            if (std.mem.eql(u8, path, "-")) {
+                doc.* = null;
+                continue;
+            }
             const text = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 * 1024 * 1024));
             doc.* = try std.json.parseFromSliceLeaky(Value, arena, text, .{});
         }
         const spv = try std.Io.Dir.cwd().readFileAlloc(io, args[i + 3], arena, .limited(16 * 1024 * 1024));
         const words = try arena.alloc(u32, spv.len / 4);
         @memcpy(std.mem.sliceAsBytes(words), spv[0 .. words.len * 4]);
-        emit(arena, w, docs[0], docs[1], words, entry, embed) catch |e| {
+        emit(arena, w, &structs, docs[0], docs[1] orelse return error.BadReflection, words, entry, embed) catch |e| {
             std.log.err("{s} ({s}, {s}): {t}", .{ entry, args[i + 1], args[i + 2], e });
             std.process.exit(1);
         };
     }
+    for (structs.values()) |def| try w.print("\n{s}", .{def});
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = args[1], .data = out.written() });
 }
 
 const Embed = struct { metal: bool, ptx: bool, spirv: bool };
+
+/// Buffer element structs by name: their Zig definitions, the same in
+/// every kernel that uses them.
+const Structs = std.StringArrayHashMapUnmanaged([]const u8);
 
 const Unsupported = error{ MissingEntryPoint, UnsupportedParameter, BadReflection, BadSpirv, ReflectionMismatch };
 
@@ -71,11 +82,12 @@ fn optStr(v: Value, key: []const u8) ?[]const u8 {
 
 fn scalar(name: []const u8) Unsupported!struct { zig: []const u8, slang: []const u8, size: u32 } {
     const map = .{
-        .{ "uint32", "u32", "uint" },
-        .{ "int32", "i32", "int" },
-        .{ "float32", "f32", "float" },
+        .{ "uint32", "u32", "uint", 4 },
+        .{ "int32", "i32", "int", 4 },
+        .{ "float32", "f32", "float", 4 },
+        .{ "float64", "f64", "double", 8 },
     };
-    inline for (map) |m| if (std.mem.eql(u8, name, m[0])) return .{ .zig = m[1], .slang = m[2], .size = 4 };
+    inline for (map) |m| if (std.mem.eql(u8, name, m[0])) return .{ .zig = m[1], .slang = m[2], .size = m[3] };
     return error.UnsupportedParameter;
 }
 
@@ -148,8 +160,15 @@ fn checkSpirv(metal_ep: Value, spirv_ep: Value, metal_params: []const Value, spi
     if (metal_params.len == 0) return;
     const mk = try get(try get(metal_ep, "scope"), "binding");
     if (try int(try get(mk, "index")) != 0) return error.UnsupportedParameter;
+}
+
+fn checkPushBlock(spirv_ep: Value, params: []const Value) Unsupported!void {
+    if (params.len == 0) return;
     const vk = try str(try get(try get(try get(spirv_ep, "scope"), "binding"), "kind"));
-    if (!std.mem.eql(u8, vk, "pushConstantBuffer")) return mismatch("parameters are not a push-constant block in SPIR-V", .{});
+    if (!std.mem.eql(u8, vk, "pushConstantBuffer")) {
+        std.log.err("SPIR-V parameters are not a push-constant block", .{});
+        return error.UnsupportedParameter;
+    }
 }
 
 /// The element type and stride of the buffer address at `offset` in the
@@ -157,6 +176,10 @@ fn checkSpirv(metal_ep: Value, spirv_ep: Value, metal_params: []const Value, spi
 const Spirv = struct {
     words: []const u32,
 
+    const op_name = 5;
+    const op_member_name = 6;
+    const op_capability = 17;
+    const capability_float64 = 10;
     const op_type_int = 21;
     const op_type_float = 22;
     const op_type_vector = 23;
@@ -198,6 +221,14 @@ const Spirv = struct {
         }
     };
 
+    fn float64(s: Spirv) bool {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            if (ins[0] & 0xffff == op_capability and ins.len > 1 and ins[1] == capability_float64) return true;
+        }
+        return false;
+    }
+
     fn decoration(s: Spirv, id: u32, which: u32) ?u32 {
         var it = s.iter();
         while (it.next()) |ins| {
@@ -224,9 +255,54 @@ const Spirv = struct {
         return error.BadSpirv;
     }
 
-    const Elem = struct { zig: []const u8, slang: []const u8, size: u32, stride: u32 };
+    const Layout = struct { size: u32, alignment: u32 };
 
-    fn element(s: Spirv, buf: []u8, offset: u32) (Unsupported || error{NoSpaceLeft})!Elem {
+    /// A buffer element. Structs are laid out per backend: Vulkan as the
+    /// SPIR-V says, Metal the same (Slang emits packed vectors for it), CUDA
+    /// by C++ rules with CUDA's aligned vector types.
+    const Elem = struct {
+        /// For structs, the type (`Span`), or per-backend function (`Job(b)`)
+        /// where layouts differ.
+        zig: []const u8,
+        is_struct: bool = false,
+        slang: []const u8,
+        natural: Layout,
+        cuda: Layout,
+        /// Differs per backend.
+        generic: bool = false,
+        stride: u32 = 0,
+
+        fn zigOn(e: Elem, arena: std.mem.Allocator, backend: []const u8) ![]const u8 {
+            if (!e.is_struct) return e.zig;
+            return if (e.generic) std.fmt.allocPrint(arena, "{f}({s})", .{ std.zig.fmtId(e.zig), backend }) else std.fmt.allocPrint(arena, "{f}", .{std.zig.fmtId(e.zig)});
+        }
+    };
+
+    const Error = Unsupported || std.mem.Allocator.Error || std.Io.Writer.Error;
+
+    /// A string operand from word `at` of `ins`.
+    fn string(ins: []const u32, at: usize) []const u8 {
+        const bytes = std.mem.sliceAsBytes(ins[at..]);
+        return bytes[0 .. std.mem.indexOfScalar(u8, bytes, 0) orelse bytes.len];
+    }
+
+    fn name(s: Spirv, id: u32) ?[]const u8 {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            if (ins[0] & 0xffff == op_name and ins.len > 2 and ins[1] == id) return string(ins, 2);
+        }
+        return null;
+    }
+
+    fn memberName(s: Spirv, id: u32, member: u32) ?[]const u8 {
+        var it = s.iter();
+        while (it.next()) |ins| {
+            if (ins[0] & 0xffff == op_member_name and ins.len > 3 and ins[1] == id and ins[2] == member) return string(ins, 3);
+        }
+        return null;
+    }
+
+    fn element(s: Spirv, arena: std.mem.Allocator, structs: *Structs, offset: u32) Error!Elem {
         var ty = try s.pushBlock();
         var at = offset;
         // Down through the parameter block and RO/RW to the address.
@@ -246,48 +322,147 @@ const Spirv = struct {
                 op_type_pointer => {
                     if (ins[2] != storage_physical) return error.BadSpirv;
                     const stride = s.decoration(ty, decoration_array_stride) orelse return error.BadSpirv;
-                    const e = try s.value(buf, ins[3]);
-                    if (e.size != stride) return error.UnsupportedParameter;
-                    return .{ .zig = e.zig, .slang = e.slang, .size = e.size, .stride = stride };
+                    var e = try s.value(arena, structs, ins[3]);
+                    if (e.natural.size != stride) return error.UnsupportedParameter;
+                    e.stride = stride;
+                    return e;
                 },
                 else => return error.BadSpirv,
             }
         }
     }
 
-    fn value(s: Spirv, buf: []u8, id: u32) (Unsupported || error{NoSpaceLeft})!Elem {
+    fn value(s: Spirv, arena: std.mem.Allocator, structs: *Structs, id: u32) Error!Elem {
         const ins = s.def(id) orelse return error.BadSpirv;
         switch (ins[0] & 0xffff) {
             op_type_int => {
                 if (ins[2] != 32) return error.UnsupportedParameter;
-                return if (ins[3] == 1) .{ .zig = "i32", .slang = "int", .size = 4, .stride = 4 } else .{ .zig = "u32", .slang = "uint", .size = 4, .stride = 4 };
+                const l: Layout = .{ .size = 4, .alignment = 4 };
+                return if (ins[3] == 1) .{ .zig = "i32", .slang = "int", .natural = l, .cuda = l } else .{ .zig = "u32", .slang = "uint", .natural = l, .cuda = l };
             },
             op_type_float => {
-                if (ins[2] != 32) return error.UnsupportedParameter;
-                return .{ .zig = "f32", .slang = "float", .size = 4, .stride = 4 };
+                const l: Layout = .{ .size = ins[2] / 8, .alignment = ins[2] / 8 };
+                return switch (ins[2]) {
+                    32 => .{ .zig = "f32", .slang = "float", .natural = l, .cuda = l },
+                    64 => .{ .zig = "f64", .slang = "double", .natural = l, .cuda = l },
+                    else => error.UnsupportedParameter,
+                };
             },
             op_type_vector => {
-                const c = try s.value(buf, ins[2]);
+                const c = try s.value(arena, structs, ins[2]);
                 const n = ins[3];
-                const slang = try std.fmt.bufPrint(buf, "{s}{d}", .{ c.slang, n });
-                const zig = try std.fmt.bufPrint(buf[slang.len..], "[{d}]{s}", .{ n, c.zig });
-                return .{ .zig = zig, .slang = slang, .size = c.size * n, .stride = c.size * n };
+                // CUDA's vector_types.h: 2 and 4 wide aligned to their size
+                // (4 wide doubles to 16), 3 wide to the component.
+                const cuda_align: u32 = switch (n) {
+                    2 => c.natural.size * 2,
+                    3 => c.natural.size,
+                    4 => @min(c.natural.size * 4, 16),
+                    else => return error.UnsupportedParameter,
+                };
+                return .{
+                    .zig = try std.fmt.allocPrint(arena, "[{d}]{s}", .{ n, c.zig }),
+                    .slang = try std.fmt.allocPrint(arena, "{s}{d}", .{ c.slang, n }),
+                    .natural = .{ .size = c.natural.size * n, .alignment = c.natural.alignment },
+                    .cuda = .{ .size = c.natural.size * n, .alignment = cuda_align },
+                };
             },
+            op_type_struct => return s.structType(arena, structs, id, ins[2..]),
             else => return error.UnsupportedParameter,
         }
     }
+
+    const Member = struct { name: []const u8, elem: Elem, natural: u32, cuda: u32 };
+
+    /// `pub fn Name(comptime b: zimt.Backend) type`: an `extern struct` per
+    /// distinct layout, padded explicitly and checked against its offsets.
+    fn structType(s: Spirv, arena: std.mem.Allocator, structs: *Structs, id: u32, member_ids: []const u32) Error!Elem {
+        var sname = s.name(id) orelse return error.UnsupportedParameter;
+        // Slang names each layout of a struct apart.
+        for ([_][]const u8{ "_natural", "_std430", "_std140", "_scalar" }) |suffix| {
+            if (std.mem.endsWith(u8, sname, suffix)) sname = sname[0 .. sname.len - suffix.len];
+        }
+        const members = try arena.alloc(Member, member_ids.len);
+        var natural: Layout = .{ .size = 0, .alignment = 1 };
+        var cuda: Layout = .{ .size = 0, .alignment = 1 };
+        for (members, member_ids, 0..) |*m, mid, i| {
+            const e = try s.value(arena, structs, mid);
+            const off = s.memberOffset(id, @intCast(i)) orelse return error.BadSpirv;
+            const cuda_off = std.mem.alignForward(u32, cuda.size, e.cuda.alignment);
+            m.* = .{ .name = s.memberName(id, @intCast(i)) orelse return error.UnsupportedParameter, .elem = e, .natural = off, .cuda = cuda_off };
+            natural = .{ .size = @max(natural.size, off + e.natural.size), .alignment = @max(natural.alignment, e.natural.alignment) };
+            cuda = .{ .size = cuda_off + e.cuda.size, .alignment = @max(cuda.alignment, e.cuda.alignment) };
+        }
+        natural.size = std.mem.alignForward(u32, natural.size, natural.alignment);
+        cuda.size = std.mem.alignForward(u32, cuda.size, cuda.alignment);
+
+        var generic = natural.size != cuda.size;
+        for (members) |m| generic = generic or m.natural != m.cuda or m.elem.generic;
+        var body: std.Io.Writer.Allocating = .init(arena);
+        const bw = &body.writer;
+        if (!generic) {
+            // The same on every backend.
+            try bw.print("pub const {f} = ", .{std.zig.fmtId(sname)});
+            try writeLayout(arena, bw, sname, members, .natural, natural.size, "", "");
+            try bw.writeAll(";\n");
+        } else {
+            try bw.print("pub fn {f}(comptime b: zimt.Backend) type {{\n", .{std.zig.fmtId(sname)});
+            try bw.writeAll("    return switch (b) {\n        .metal, .vulkan => ");
+            try writeLayout(arena, bw, sname, members, .natural, natural.size, "        ", "b");
+            try bw.writeAll(",\n        .cuda => ");
+            try writeLayout(arena, bw, sname, members, .cuda, cuda.size, "        ", "b");
+            try bw.writeAll(",\n    };\n}\n");
+        }
+        const text = body.written();
+        if (structs.get(sname)) |prev| {
+            if (!std.mem.eql(u8, prev, text)) {
+                std.log.err("struct `{s}` differs between kernels", .{sname});
+                return error.ReflectionMismatch;
+            }
+        } else try structs.put(arena, sname, text);
+        return .{ .zig = sname, .is_struct = true, .slang = sname, .natural = natural, .cuda = cuda, .generic = generic };
+    }
+
+    /// `backend` names the backend in member types and messages.
+    fn writeLayout(arena: std.mem.Allocator, w: *std.Io.Writer, sname: []const u8, members: []const Member, comptime which: enum { natural, cuda }, size: u32, indent: []const u8, backend: []const u8) Error!void {
+        const on = if (std.mem.eql(u8, backend, "b")) " on \" ++ @tagName(b)" else "\"";
+        try w.writeAll("extern struct {\n");
+        var at: u32 = 0;
+        var pads: u32 = 0;
+        for (members) |m| {
+            const off = @field(m, @tagName(which));
+            if (off > at) {
+                try w.print("{s}    _pad{d}: [{d}]u8 = @splat(0),\n", .{ indent, pads, off - at });
+                pads += 1;
+            }
+            try w.print("{s}    {f}: {s},\n", .{ indent, std.zig.fmtId(m.name), try m.elem.zigOn(arena, backend) });
+            at = off + @field(m.elem, @tagName(which)).size;
+        }
+        if (size > at) try w.print("{s}    _pad{d}: [{d}]u8 = @splat(0),\n", .{ indent, pads, size - at });
+        try w.print("\n{s}    comptime {{\n{s}        if (@sizeOf(@This()) != {d}) @compileError(\"{s}: not {d} bytes{s});\n", .{ indent, indent, size, sname, size, on });
+        for (members) |m| {
+            const off = @field(m, @tagName(which));
+            try w.print("{s}        if (@offsetOf(@This(), \"{s}\") != {d}) @compileError(\"{s}.{s}: not at {d}{s});\n", .{ indent, m.name, off, sname, m.name, off, on });
+        }
+        try w.print("{s}    }}\n{s}}}", .{ indent, indent });
+    }
 };
 
-fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, metal_doc: Value, spirv_doc: Value, spv: []const u32, entry: []const u8, embed: Embed) !void {
+fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, structs: *Structs, metal_doc: ?Value, spirv_doc: Value, spv: []const u32, entry: []const u8, embed: Embed) !void {
     if (spv.len < 5 or spv[0] != 0x07230203) return error.BadSpirv;
-    const ep = try entryPoint(metal_doc, entry);
+    const s: Spirv = .{ .words = spv };
+    const float64 = s.float64();
+    if (float64 and metal_doc != null) {
+        std.log.err("kernels using `double` have no Metal build", .{});
+        return error.UnsupportedParameter;
+    }
     const vk_ep = try entryPoint(spirv_doc, entry);
     var metal_buf: [64]Value = undefined;
     var spirv_buf: [64]Value = undefined;
-    const params = try userParams(ep, &metal_buf);
     const vk_params = try userParams(vk_ep, &spirv_buf);
-    try checkSpirv(ep, vk_ep, params, vk_params);
-    const s: Spirv = .{ .words = spv };
+    try checkPushBlock(vk_ep, vk_params);
+    const ep = if (metal_doc) |doc| try entryPoint(doc, entry) else vk_ep;
+    const params = if (metal_doc != null) try userParams(ep, &metal_buf) else vk_params;
+    if (metal_doc != null) try checkSpirv(ep, vk_ep, params, vk_params);
 
     const tg = try get(ep, "threadGroupSize");
     if (tg != .array or tg.array.items.len != 3) return error.BadReflection;
@@ -297,8 +472,9 @@ fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, metal_doc: Value, spirv_doc
     try w.print("    pub const name = \"{s}\";\n", .{entry});
     try w.print("    pub const symbol = \"{s}\";\n", .{try str(try get(ep, "name"))});
     try w.print("    pub const threads: [3]u32 = .{{ {d}, {d}, {d} }};\n", .{ threads[0], threads[1], threads[2] });
+    try w.print("    pub const float64 = {};\n", .{float64});
     inline for (.{ .{ "metal", "metallib" }, .{ "ptx", "ptx" }, .{ "spirv", "spv" } }) |c| {
-        if (@field(embed, c[0])) {
+        if (@field(embed, c[0]) and !(float64 and comptime std.mem.eql(u8, c[0], "metal"))) {
             try w.print("    pub const " ++ c[0] ++ ": []const u8 = @embedFile(\"{s}." ++ c[1] ++ "\");\n", .{entry});
         } else try w.writeAll("    pub const " ++ c[0] ++ ": []const u8 = \"\";\n");
     }
@@ -306,7 +482,8 @@ fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, metal_doc: Value, spirv_doc
     var size: u32 = 0;
     var max_align: u32 = 4;
     var decls: std.Io.Writer.Allocating = .init(arena);
-    try w.writeAll("    pub const Args = struct {\n");
+    var args: std.Io.Writer.Allocating = .init(arena);
+    var generic = false;
     for (params) |p| {
         const pname = try str(try get(p, "name"));
         const b = try get(p, "binding");
@@ -316,21 +493,33 @@ fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, metal_doc: Value, spirv_doc
         if (try bufferAccess(p)) |access| {
             if (psize != 8 or offset % 8 != 0) return error.BadReflection;
             max_align = 8;
-            var buf: [32]u8 = undefined;
-            const el = try s.element(&buf, offset);
-            try w.print("        /// {s}<{s}>\n", .{ if (access == .read) "RO" else "RW", el.slang });
-            try w.print("        {f}: zimt.Buffer({s}),\n", .{ std.zig.fmtId(pname), el.zig });
-            try decls.writer.print("        .{{ .name = \"{s}\", .offset = {d}, .kind = .{{ .buffer = .{{ .access = .{t}, .stride = {d} }} }} }},\n", .{ pname, offset, access, el.stride });
+            const el = try s.element(arena, structs, offset);
+            generic = generic or el.generic;
+            // CUDA vectors are their size apart in arrays, as in SPIR-V.
+            const cuda_stride = if (el.generic) el.cuda.size else el.stride;
+            try args.writer.print("        /// {s}<{s}>\n", .{ if (access == .read) "RO" else "RW", el.slang });
+            try args.writer.print("        {f}: zimt.Buffer({s}),\n", .{ std.zig.fmtId(pname), try el.zigOn(arena, if (el.generic) "b" else ".vulkan") });
+            try decls.writer.print("        .{{ .name = \"{s}\", .offset = {d}, .kind = .{{ .buffer = .{{ .access = .{t}, .stride = .{{ .metal = {d}, .cuda = {d}, .vulkan = {d} }} }} }} }},\n", .{ pname, offset, access, el.stride, cuda_stride, el.stride });
         } else {
             const t = try get(p, "type");
             if (!std.mem.eql(u8, try str(try get(t, "kind")), "scalar")) return error.UnsupportedParameter;
             const sc = try scalar(try str(try get(t, "scalarType")));
             if (psize != sc.size) return error.BadReflection;
-            try w.print("        {f}: {s},\n", .{ std.zig.fmtId(pname), sc.zig });
+            if (sc.size == 8) max_align = 8;
+            try args.writer.print("        {f}: {s},\n", .{ std.zig.fmtId(pname), sc.zig });
             try decls.writer.print("        .{{ .name = \"{s}\", .offset = {d}, .kind = .{{ .value = .{{ .size = {d} }} }} }},\n", .{ pname, offset, psize });
         }
     }
-    try w.writeAll("    };\n");
+    // Struct elements are laid out per backend.
+    if (generic) {
+        try w.writeAll("    pub fn Args(comptime b: zimt.Backend) type {\n        return struct {\n");
+        var lines = std.mem.splitScalar(u8, args.written(), '\n');
+        while (lines.next()) |line| if (line.len > 0) try w.print("        {s}\n", .{line});
+        try w.writeAll("        };\n    }\n");
+    } else {
+        // One type for every backend, so anonymous literals coerce.
+        try w.print("    const Shared = struct {{\n{s}    }};\n    pub fn Args(comptime b: zimt.Backend) type {{\n        _ = b;\n        return Shared;\n    }}\n", .{args.written()});
+    }
     // As a C struct, which Metal's argument block is.
     try w.print("    pub const arg_size = {d};\n", .{std.mem.alignForward(u32, size, max_align)});
     try w.writeAll("    pub const params = [_]zimt.Param{\n");

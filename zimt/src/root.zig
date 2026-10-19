@@ -18,7 +18,8 @@ pub const vulkan = if (options.vulkan) @import("vulkan.zig") else struct {};
 
 pub const Backend = enum { metal, cuda, vulkan };
 
-pub const Error = error{ BackendUnavailable, DeviceError, KernelNotFound, OutOfMemory };
+/// `Unsupported`: the kernel needs a feature the device lacks (`Device.float64`).
+pub const Error = error{ BackendUnavailable, DeviceError, KernelNotFound, OutOfMemory, Unsupported };
 
 pub fn compiledIn(b: Backend) bool {
     return switch (b) {
@@ -146,16 +147,30 @@ pub const Param = struct {
     offset: u32,
     kind: union(enum) {
         /// A device address (`RO<T>`, `RW<T>`). `access` orders Vulkan
-        /// commands; `stride` must match the `Args` field's element (`checkDef`).
-        buffer: struct { access: Access, stride: u32 },
+        /// commands; `stride`, per backend, must match the `Args` field's
+        /// element there (`checkDef`).
+        buffer: struct { access: Access, stride: std.enums.EnumFieldStruct(Backend, u32, null) },
         value: struct { size: u32 },
     },
 };
 
-/// Checks a kernel's Zig types against its reflected layout; a mismatch
-/// would skew every element or field after it.
+/// Checks a kernel's Zig types against its reflected layout on every
+/// backend; a mismatch would skew every element or field after it.
 fn checkDef(comptime K: type) void {
-    inline for (.{ "name", "symbol", "threads", "metal", "ptx", "spirv", "Args", "params", "arg_size" }) |decl| {
+    @setEvalBranchQuota(100_000);
+    inline for (comptime std.enums.values(Backend)) |b| checkArgs(K, b);
+}
+
+/// `K.Args(b)`, shared by every backend unless struct elements differ.
+fn sharedArgs(comptime K: type) ?type {
+    const A = K.Args(.vulkan);
+    inline for (comptime std.enums.values(Backend)) |b| if (K.Args(b) != A) return null;
+    return A;
+}
+
+fn checkArgs(comptime K: type, comptime backend: Backend) void {
+    @setEvalBranchQuota(100_000);
+    inline for (.{ "name", "symbol", "threads", "float64", "metal", "ptx", "spirv", "Args", "params", "arg_size" }) |decl| {
         if (!@hasDecl(K, decl)) @compileError(@typeName(K) ++ " is not a zimt kernel (missing `" ++ decl ++ "`)");
     }
     const fail = struct {
@@ -163,16 +178,18 @@ fn checkDef(comptime K: type) void {
             @compileError(std.fmt.comptimePrint("kernel '{s}', `{s}`: " ++ fmt, .{ K.name, param } ++ args));
         }
     }.f;
-    if (@typeInfo(K.Args).@"struct".field_names.len != K.params.len)
+    const A = K.Args(backend);
+    if (@typeInfo(A).@"struct".field_names.len != K.params.len)
         @compileError("kernel '" ++ K.name ++ "': Args fields differ from its reflected parameters");
     var end: u32 = 0;
     for (K.params) |p| {
-        if (!@hasField(K.Args, p.name)) fail(p.name, "missing from Args", .{});
-        const F = @FieldType(K.Args, p.name);
+        if (!@hasField(A, p.name)) fail(p.name, "missing from Args", .{});
+        const F = @FieldType(A, p.name);
         const size: u32 = switch (p.kind) {
             .buffer => |b| blk: {
                 const T = Elem(F);
-                if (@sizeOf(T) != b.stride) fail(p.name, "{s} is {d} bytes, but the kernel's elements are {d} apart", .{ @typeName(T), @sizeOf(T), b.stride });
+                const stride = @field(b.stride, @tagName(backend));
+                if (@sizeOf(T) != stride) fail(p.name, "{s} is {d} bytes, but the kernel's elements are {d} apart on {t}", .{ @typeName(T), @sizeOf(T), stride, backend });
                 break :blk 8;
             },
             .value => |v| blk: {
@@ -189,14 +206,18 @@ fn checkDef(comptime K: type) void {
 
 /// The argument block every backend passes: addresses and values at their
 /// reflected offsets.
-pub fn packArgs(comptime K: type, args: K.Args) [K.arg_size]u8 {
+pub fn packArgs(comptime K: type, args: anytype) [K.arg_size]u8 {
     comptime checkDef(K);
     var bytes: [K.arg_size]u8 = @splat(0);
     inline for (K.params) |p| {
         const v = @field(args, p.name);
         switch (p.kind) {
             .buffer => std.mem.writeInt(u64, bytes[p.offset..][0..8], v.mem.address(), .little),
-            .value => |val| bytes[p.offset..][0..val.size].* = @bitCast(v),
+            .value => |val| {
+                // Values are the same type on every backend.
+                const typed: @FieldType(K.Args(.vulkan), p.name) = v;
+                bytes[p.offset..][0..val.size].* = @bitCast(typed);
+            },
         }
     }
     return bytes;
@@ -210,9 +231,17 @@ pub const Groups = union(enum) {
 };
 
 pub fn Kernel(comptime K: type) type {
+    return KernelOn(K, null);
+}
+
+/// A loaded kernel (`Device.kernel`). Its `Args` are `K.Args(b)`: one type
+/// for every backend unless struct elements are laid out per backend, when
+/// `Device.kernelOn` fixes the backend.
+pub fn KernelOn(comptime K: type, comptime backend: ?Backend) type {
     comptime checkDef(K);
     return struct {
         pub const Def = K;
+        pub const Args = if (backend) |b| K.Args(b) else sharedArgs(K) orelse if (only) |b| K.Args(b) else @compileError("kernel '" ++ K.name ++ "' lays out struct elements per backend: load it with `Device.kernelOn`");
         /// Metal: retained `id<MTLComputePipelineState>`; CUDA: `CUfunction`;
         /// Vulkan: a backend record (pipeline and layouts).
         handle: usize,
@@ -261,6 +290,8 @@ pub const Device = struct {
     state: *anyopaque,
     name_buf: [256]u8 = undefined,
     name_len: usize = 0,
+    /// Kernels using `double` load: CUDA, and Vulkan with `shaderFloat64`.
+    float64: bool = false,
     submitted: u64 = 0,
     completed: u64 = 0,
     /// Work enqueued since the last submit.
@@ -330,11 +361,19 @@ pub const Device = struct {
         switch (self.which()) {
             inline else => |b| {
                 if (comptime !compiledIn(b)) unreachable;
+                if (K.float64 and !self.float64) return Error.Unsupported;
                 const code: []const u8 = @field(K, @tagName(code_decl.get(b)));
                 if (code.len == 0) return Error.BackendUnavailable;
                 return impl(b).kernel(self, K, code);
             },
         }
+    }
+
+    /// `kernel` for code instantiated per backend, with `K.Args(b)`.
+    pub fn kernelOn(self: *Device, comptime b: Backend, comptime K: type) !KernelOn(K, b) {
+        std.debug.assert(self.which() == b);
+        const k = try self.kernel(K);
+        return .{ .handle = k.handle, .module = k.module };
     }
 
     const code_decl = std.EnumArray(Backend, enum { metal, ptx, spirv }).init(.{ .metal = .metal, .cuda = .ptx, .vulkan = .spirv });
@@ -613,20 +652,20 @@ pub const Device = struct {
     }
 
     /// Enqueue `k` over `groups` thread groups of `[numthreads]`.
-    pub fn dispatch(self: *Device, k: anytype, groups: [3]u32, args: @TypeOf(k).Def.Args) !void {
+    pub fn dispatch(self: *Device, k: anytype, groups: [3]u32, args: @TypeOf(k).Args) !void {
         if (groups[0] == 0 or groups[1] == 0 or groups[2] == 0) return;
         return self.dispatchGroups(k, .{ .direct = groups }, args);
     }
 
     /// Folds into rows of `row_groups` groups; kernels index with `zimt_index`.
-    pub fn dispatch1d(self: *Device, k: anytype, n: usize, args: @TypeOf(k).Def.Args) !void {
+    pub fn dispatch1d(self: *Device, k: anytype, n: usize, args: @TypeOf(k).Args) !void {
         return self.dispatch(k, try fold(@TypeOf(k).Def, n), args);
     }
 
     /// Enqueue `k` over the groups in `groups[index]` when the device
     /// reaches it, at most `max` in each dimension. Kernels bound-check
     /// against a count they read: CUDA runs all of `max`.
-    pub fn dispatchIndirect(self: *Device, k: anytype, groups: Buffer([3]u32), index: usize, max: [3]u32, args: @TypeOf(k).Def.Args) !void {
+    pub fn dispatchIndirect(self: *Device, k: anytype, groups: Buffer([3]u32), index: usize, max: [3]u32, args: @TypeOf(k).Args) !void {
         std.debug.assert(index < groups.len);
         if (max[0] == 0 or max[1] == 0 or max[2] == 0) return;
         const at = groups.mem.span(index * @sizeOf([3]u32), @sizeOf([3]u32));
@@ -635,7 +674,7 @@ pub const Device = struct {
 
     /// `dispatchIndirect` for groups from `zimt_groups(n, K.threads[0])`,
     /// with `n <= max_n`.
-    pub fn dispatchIndirect1d(self: *Device, k: anytype, groups: Buffer([3]u32), index: usize, max_n: usize, args: @TypeOf(k).Def.Args) !void {
+    pub fn dispatchIndirect1d(self: *Device, k: anytype, groups: Buffer([3]u32), index: usize, max_n: usize, args: @TypeOf(k).Args) !void {
         return self.dispatchIndirect(k, groups, index, try fold(@TypeOf(k).Def, max_n), args);
     }
 
@@ -646,9 +685,13 @@ pub const Device = struct {
         return .{ row_groups, std.math.cast(u32, rows) orelse return Error.DeviceError, 1 };
     }
 
-    fn dispatchGroups(self: *Device, k: anytype, groups: Groups, args: @TypeOf(k).Def.Args) !void {
+    fn dispatchGroups(self: *Device, k: anytype, groups: Groups, args: @TypeOf(k).Args) !void {
+        const K = @TypeOf(k).Def;
         switch (self.which()) {
-            inline else => |b| if (comptime compiledIn(b)) try impl(b).dispatch(self, @TypeOf(k).Def, k.handle, groups, args) else unreachable,
+            // Other backends: `kernelOn` loaded it for this one.
+            inline else => |b| if (comptime !compiledIn(b) or @TypeOf(k).Args != K.Args(b)) unreachable else {
+                try impl(b).dispatch(self, K, k.handle, groups, args);
+            },
         }
         self.dirty = true;
     }

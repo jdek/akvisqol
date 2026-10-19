@@ -114,6 +114,24 @@ b.step("shaders", "Regenerate MSL, SPIR-V + reflection").dependOn(zimt.addRegene
 - **One entry point per kernel**: `.name` compiles `<name>.slang`'s
   `<name>`; `.source` and `.entry` pick another file and a specialized
   generic (`fft_pass<Radix16>`), so one generic kernel can be several.
+  `.defines` (`&.{"REAL=double"}`) builds one source more than once.
+- **`.precise = true`** builds with `-fp-mode precise`: no contraction
+  into FMAs, so f64 kernels can follow a CPU's operation order exactly.
+- **Buffer elements may be structs** declared in Slang. bindgen emits
+  each as an `extern struct` with explicit padding, its offsets checked
+  at comptime: one type (`kernels.Span`) when every backend lays it out
+  alike, else `kernels.Job(b)` per backend (Vulkan and Metal as Slang's
+  scalar layout, CUDA aligning `float2`/`float4` to 8/16), and the
+  kernel's `Args(b)` follow; load such a kernel with
+  `dev.kernelOn(b, K)` from code instantiated per backend. Host data is
+  written in the device's layout, without repacking.
+- **f64 kernels** (`.float64 = true`, for kernels using `double`) have no
+  Metal build or reflection; their binding has `float64 = true`, and
+  `Device.kernel` returns `Unsupported` unless `Device.float64`: on CUDA,
+  and on Vulkan with `shaderFloat64` (which zimt then enables).
+  `ZIMT_VULKAN_NO_FLOAT64=1` hides it, to test the fallback. Metal has
+  no f64. Slang generics turn `T(literal)` into a float first, so a
+  `REAL` define keeps double constants exact where generics would not.
 - **The `zimt` module has no target of its own** and takes the target of
   the module that imports it.
 
@@ -202,9 +220,10 @@ Xcode.
 
 ## Vulkan
 
-Vulkan 1.2 devices with timeline semaphores and buffer device addresses
-qualify; others are skipped. One compute queue (compute-only if there is
-one); kernel arguments are push constants, so there are no descriptors.
+Vulkan 1.2 devices with timeline semaphores, buffer device addresses and
+scalar block layout (Slang's layout of structs behind pointers)
+qualify; others are skipped. One compute queue, compute-only if there is
+one.
 
 - **Device:** the first discrete GPU, then integrated, then others, CPU
   implementations last. `ZIMT_VULKAN_DEVICE=<index|name substring>`

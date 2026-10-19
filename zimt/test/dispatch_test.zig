@@ -440,3 +440,67 @@ test "indirect dispatch over a list the device built" {
         }
     }.f);
 }
+
+test "f64 kernels where the device has f64" {
+    try eachDevice(struct {
+        fn f(dev: *zimt.Device) !void {
+            const k = dev.kernel(kernels.daxpy) catch |e| {
+                try std.testing.expect(!dev.float64 and e == error.Unsupported);
+                return;
+            };
+            defer dev.release(k);
+            const n = 1000;
+            var x: [n]f64 = undefined;
+            var y: [n]f64 = undefined;
+            for (&x, &y, 0..) |*a, *b, i| {
+                a.* = 1.0 + @as(f64, @floatFromInt(i)) * 0x1p-40;
+                b.* = @floatFromInt(i);
+            }
+            const dx = try dev.allocInit(f64, &x);
+            defer dev.free(dx);
+            const dy = try dev.allocInit(f64, &y);
+            defer dev.free(dy);
+            try dev.dispatch1d(k, n, .{ .x = dx, .y = dy, .a = 3.0 + 0x1p-30, .n = n });
+            var out: [n]f64 = undefined;
+            try dev.download(dy, 0, &out);
+            const a: f64 = 3.0 + 0x1p-30;
+            // Beyond f32: x's low bits and a's survive.
+            for (out, x, y) |o, xv, yv| try std.testing.expectApproxEqRel(@mulAdd(f64, a, xv, yv), o, 1e-15);
+        }
+    }.f);
+}
+
+test "struct elements in each backend's layout" {
+    // Span is the same everywhere; Job's float2 isn't.
+    comptime std.debug.assert(@sizeOf(kernels.Span) == 8);
+    comptime std.debug.assert(@sizeOf(kernels.Job(.vulkan)) == 20 and @offsetOf(kernels.Job(.vulkan), "bias") == 12);
+    comptime std.debug.assert(@sizeOf(kernels.Job(.cuda)) == 24 and @offsetOf(kernels.Job(.cuda), "bias") == 16);
+    try eachDevice(struct {
+        fn f(dev: *zimt.Device) !void {
+            switch (dev.backend) {
+                inline else => |b| if (comptime zimt.compiledIn(b)) try run(b, dev),
+            }
+        }
+
+        fn run(comptime b: zimt.Backend, dev: *zimt.Device) !void {
+            const Job = kernels.Job(b);
+            const k = try dev.kernelOn(b, kernels.gather);
+            defer dev.release(k);
+            const x = [_]f32{ 1, 2, 3, 4, 5, 6 };
+            const jobs = [_]Job{
+                .{ .src = .{ .start = 0, .len = 3 }, .scale = 2, .bias = .{ 1, 0.5 } },
+                .{ .src = .{ .start = 4, .len = 2 }, .scale = -1, .bias = .{ 0, 1 } },
+            };
+            const dx = try dev.allocInit(f32, &x);
+            defer dev.free(dx);
+            const dj = try dev.allocInit(Job, &jobs);
+            defer dev.free(dj);
+            const dy = try dev.alloc(f32, .readback, jobs.len);
+            defer dev.free(dy);
+            try dev.dispatch1d(k, jobs.len, .{ .jobs = dj, .x = dx, .y = dy, .n = jobs.len });
+            var out: [jobs.len]f32 = undefined;
+            try dev.download(dy, 0, &out);
+            try std.testing.expectEqualSlices(f32, &.{ 12.5, -12 }, &out);
+        }
+    }.f);
+}

@@ -5,8 +5,9 @@
 //! device addresses; one queue and a timeline semaphore for fences.
 //!
 //!   ZIMT_VULKAN_DEVICE=<index|name substring>  pick a device
-//!   ZIMT_VULKAN_VALIDATION=1    validation layer; errors fail the next submit
-//!   ZIMT_VULKAN_NO_HOST_MAP=1   keep every buffer device-local
+//!   ZIMT_VULKAN_VALIDATION=1    validation layer; errors fail the next submit or wait
+//!   ZIMT_VULKAN_NO_HOST_MAP=1   keep `.device` buffers device-local
+//!   ZIMT_VULKAN_NO_FLOAT64=1    load no `double` kernels (as on devices without them)
 const std = @import("std");
 const builtin = @import("builtin");
 const zimt = @import("root.zig");
@@ -229,7 +230,7 @@ pub fn open(d: *zimt.Device) !void {
     errdefer destroy(st);
     try createInstance(st);
     try pickDevice(st, d);
-    try createDevice(st);
+    try createDevice(st, d.float64);
 }
 
 fn createInstance(st: *State) !void {
@@ -308,6 +309,7 @@ const Candidate = struct {
     family: u32,
     rank: u8,
     memory_budget: bool,
+    float64: bool,
 };
 
 fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDeviceProperties) union(enum) { ok: Candidate, unsuitable: []const u8 } {
@@ -318,6 +320,8 @@ fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDevicePr
     st.inst.vkGetPhysicalDeviceFeatures2(pd, &features);
     if (v12.timelineSemaphore != c.VK_TRUE) return .{ .unsuitable = "no timelineSemaphore" };
     if (v12.bufferDeviceAddress != c.VK_TRUE) return .{ .unsuitable = "no bufferDeviceAddress" };
+    // Slang's layout of structs behind pointers (vectors at component alignment).
+    if (v12.scalarBlockLayout != c.VK_TRUE) return .{ .unsuitable = "no scalarBlockLayout" };
 
     var n: u32 = 0;
     if (!ok(st.inst.vkEnumerateDeviceExtensionProperties(pd, null, &n, null))) return .{ .unsuitable = "cannot list extensions" };
@@ -349,7 +353,7 @@ fn assess(st: *State, pd: c.VkPhysicalDevice, props: *const c.VkPhysicalDevicePr
         c.VK_PHYSICAL_DEVICE_TYPE_CPU => 4,
         else => 3,
     };
-    return .{ .ok = .{ .physical = pd, .family = family orelse return .{ .unsuitable = "no compute queue" }, .rank = rank, .memory_budget = memory_budget } };
+    return .{ .ok = .{ .physical = pd, .family = family orelse return .{ .unsuitable = "no compute queue" }, .rank = rank, .memory_budget = memory_budget, .float64 = features.features.shaderFloat64 == c.VK_TRUE and !envFlag("ZIMT_VULKAN_NO_FLOAT64") } };
 }
 
 fn deviceName(st: *State, pd: c.VkPhysicalDevice, buf: []u8) []const u8 {
@@ -401,6 +405,7 @@ fn pickDevice(st: *State, d: *zimt.Device) !void {
     st.physical = pick.physical;
     st.family = pick.family;
     st.memory_budget = pick.memory_budget;
+    d.float64 = pick.float64;
     d.name_len = deviceName(st, pick.physical, &d.name_buf).len;
 
     var props: c.VkPhysicalDeviceProperties2 = .{ .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
@@ -447,7 +452,7 @@ fn chooseMemory(st: *State) void {
     } else 0;
 }
 
-fn createDevice(st: *State) !void {
+fn createDevice(st: *State, float64: bool) !void {
     const family = st.family;
     const priority: f32 = 1.0;
     const queue_info: c.VkDeviceQueueCreateInfo = .{
@@ -460,11 +465,17 @@ fn createDevice(st: *State) !void {
         .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
         .timelineSemaphore = c.VK_TRUE,
         .bufferDeviceAddress = c.VK_TRUE,
+        .scalarBlockLayout = c.VK_TRUE,
+    };
+    const features: c.VkPhysicalDeviceFeatures2 = .{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &v12,
+        .features = .{ .shaderFloat64 = if (float64) c.VK_TRUE else c.VK_FALSE },
     };
     const exts = [_][*:0]const u8{c.VK_EXT_MEMORY_BUDGET_EXTENSION_NAME};
     const info: c.VkDeviceCreateInfo = .{
         .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &v12,
+        .pNext = &features,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_info,
         .enabledExtensionCount = if (st.memory_budget) exts.len else 0,
@@ -818,7 +829,7 @@ pub fn fill(d: *zimt.Device, dst: zimt.Span) !void {
     st.dev.vkCmdFillBuffer(cb, blockRec(dst.block).buffer, dst.offset, dst.len, 0);
 }
 
-pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args) !void {
+pub fn dispatch(d: *zimt.Device, comptime K: type, handle: usize, groups: zimt.Groups, args: K.Args(.vulkan)) !void {
     const st = state(d);
     const kr: *KernelRec = @ptrFromInt(handle);
     // dispatch1d and zimt_groups keep within the guaranteed 65535.
