@@ -32,11 +32,14 @@ pub fn applies(ga: *const GpuAccel) bool {
 /// Scores `pairs` on the device; per-pair failures land in `results`.
 /// With `grads` (each as long as its pair's deg), also ∂moslqo/∂deg, the
 /// discrete choices (lags, matches, realignment, floors) held fixed; a
-/// pair the CPU rescored fails with `error.GradientUnavailable`.
-pub fn measureBatch(ga: *GpuAccel, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
+/// pair the CPU rescored fails with `error.GradientUnavailable`. With
+/// `refs` (each `pairs[i].ref`'s, from `prepare`), their cached patches
+/// and energies, and samples and spectrograms on the device, stand in for
+/// uploading and computing them.
+pub fn measureBatch(ga: *GpuAccel, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64, refs: ?[]const visqol.PreparedRef) !void {
     switch (v.impl) {
         inline else => |*p| switch (ga.precision) {
-            inline else => |precision| return run(precision, ga, v, p, pairs, sample_rate, results, grads),
+            inline else => |precision| return run(precision, ga, v, p, pairs, sample_rate, results, grads, refs),
         },
     }
 }
@@ -76,6 +79,8 @@ const PairPlan = struct {
     num_patches: usize = 0,
     /// DP and backtrace tables, num_patches × nf_deg.
     table: usize = 0,
+    /// The ref's cached energy, patches and spectrogram.
+    prepared: ?*const visqol.PreparedRef = null,
 
     fn live(p: PairPlan) bool {
         return p.failed == null;
@@ -91,6 +96,7 @@ fn run(
     sample_rate: u32,
     results: []anyerror!visqol.Result,
     grads: ?[]const []f64,
+    refs: ?[]const visqol.PreparedRef,
 ) !void {
     const NB = @TypeOf(p.*).num_bands;
     const T = GpuAccel.Real(precision);
@@ -108,10 +114,10 @@ fn run(
 
     const plans = try a.alloc(PairPlan, pairs.len);
     defer a.free(plans);
-    defer for (plans) |pl| a.free(pl.ref_indices);
+    defer for (plans) |pl| if (pl.prepared == null) a.free(pl.ref_indices);
     var signal_len: usize = 0;
-    for (plans, pairs) |*pl, pair| {
-        pl.* = .{ .ref = pair.ref, .deg = pair.deg };
+    for (plans, pairs, 0..) |*pl, pair, i| {
+        pl.* = .{ .ref = pair.ref, .deg = pair.deg, .prepared = if (refs) |r| &r[i] else null };
         pl.ref_off = signal_len;
         pl.deg_off = pl.ref_off + pair.ref.len;
         pl.al_off = pl.deg_off + pair.deg.len;
@@ -153,6 +159,13 @@ fn run(
     defer scope.deinit();
 
     const sig = try uploadSignals(precision, ga, lane, &scope, plans, signal_len);
+    // Prepared refs' samples from the lane's copy.
+    const cache: ?DeviceRefs(precision).Copy = if (refs) |r| if (r.len > 0) try @as(*DeviceRefs(precision), @ptrCast(@alignCast(r[0].cache.?))).on(lane) else null else null;
+    if (cache) |c| for (plans) |pl| {
+        const pr = pl.prepared.?;
+        try copy(T, lane, c.hi, pr.signal_off, sig.hi, pl.ref_off, pl.ref.len);
+        if (precision == .balanced) try copy(f32, lane, c.lo, pr.signal_off, sig.lo, pl.ref_off, pl.ref.len);
+    };
     const lags = try a.alloc(i32, pairs.len);
     defer a.free(lags);
     const status = try a.alloc(u32, pairs.len);
@@ -226,7 +239,7 @@ fn run(
         var e_ref: f64 = 0;
         var e_deg: f64 = 0;
         if (exact_energy) {
-            e_ref = sumSquares(pl.ref);
+            e_ref = if (pl.prepared) |pr| pr.energy else sumSquares(pl.ref);
             e_deg = sumSquares(alignedDeg(pl.ref.len, pl.deg, pl.lag));
         } else {
             for (energy[row * 2 * energy_blocks ..][0..energy_blocks]) |x| e_ref += x;
@@ -251,7 +264,7 @@ fn run(
     var saved: Saved(T) = .{};
     defer saved.deinit(a);
     if (num_patches > 0) {
-        try runModel(precision, NB, ga, lane, &scope, plans, sig, params, options, ps, sample_rate, fd, spec_len, table_len, &out, &saved);
+        try runModel(precision, NB, ga, lane, &scope, plans, sig, if (cache) |c| c.spec else null, params, options, ps, sample_rate, fd, spec_len, table_len, &out, &saved);
     }
 
     // Map: the CPU's matches from the device's, then its result.
@@ -306,13 +319,162 @@ fn planPair(comptime NB: usize, pl: *PairPlan, p: anytype, options: visqol.Optio
     if (pl.ref.len <= window or pl.aligned_len <= window) return visqol.Error.SpectrogramTooShort;
     pl.nf_ref = gammatone.numFrames(pl.ref.len, window, hop);
     pl.nf_deg = gammatone.numFrames(pl.aligned_len, window, hop);
-    const allocator = p.allocator;
-    pl.ref_indices = switch (options.mode) {
-        .audio => try dp.refPatchIndices(allocator, pl.nf_ref, p.patch_size),
-        .speech => try vad.refPatchIndices(allocator, pl.ref, pl.nf_ref, p.patch_size, window, p.overlap),
-    };
+    pl.ref_indices = if (pl.prepared) |pr| pr.indices else try refIndices(p, options, pl.ref, pl.nf_ref, window);
     if (pl.ref_indices.len == 0) return visqol.Error.NoPatches;
     pl.num_patches = try dp.searchPatches(pl.ref_indices, pl.nf_ref, pl.nf_deg, p.patch_size);
+}
+
+fn refIndices(p: anytype, options: visqol.Options, ref: []const f64, nf_ref: usize, window: usize) ![]usize {
+    return switch (options.mode) {
+        .audio => try dp.refPatchIndices(p.allocator, nf_ref, p.patch_size),
+        .speech => try vad.refPatchIndices(p.allocator, ref, nf_ref, p.patch_size, window, p.overlap),
+    };
+}
+
+/// Each of `prepared`'s references' energy, patches and spectrogram (on the
+/// device, in its precision), for `measureBatch`.
+pub fn prepare(ga: *GpuAccel, v: *visqol.Visqol, prepared: *visqol.Prepared) !void {
+    switch (v.impl) {
+        inline else => |*p| switch (ga.precision) {
+            inline else => |precision| return prepareImpl(precision, ga, v, p, prepared),
+        },
+    }
+}
+
+fn prepareImpl(comptime precision: visqol.Precision, ga: *GpuAccel, v: *visqol.Visqol, p: anytype, prepared: *visqol.Prepared) !void {
+    const NB = @TypeOf(p.*).num_bands;
+    const T = GpuAccel.Real(precision);
+    const a = prepared.allocator;
+    const sample_rate = prepared.sample_rate;
+    if (sample_rate == 0) return error.InvalidInput;
+    try p.ensureCache(sample_rate);
+    const window = p.cached_window_size;
+    const hop = p.cached_hop_size;
+    const params: accel.SpecParams = .{ .bands = &p.cached_filters.?.bands, .window_size = window, .hop_size = hop, .hann = p.cached_hann };
+
+    // Their signals end to end, and every frame of each.
+    var frames: std.ArrayList(kernels.Frame) = .empty;
+    defer frames.deinit(ga.allocator);
+    var signal_len: usize = 0;
+    var spec_len: usize = 0;
+    for (prepared.refs) |*r| {
+        if (r.samples.len <= window) return visqol.Error.SpectrogramTooShort;
+        r.energy = sumSquares(r.samples);
+        r.frames = gammatone.numFrames(r.samples.len, window, hop);
+        a.free(r.indices);
+        r.indices = &.{};
+        r.indices = try refIndices(p, v.options, r.samples, r.frames, window);
+        if (r.indices.len == 0) return visqol.Error.NoPatches;
+        for (0..r.frames) |f| try frames.append(ga.allocator, .{ .start = u(signal_len + f * hop), .out = u(spec_len + f), .stride = u(r.frames) });
+        signal_len += r.samples.len;
+        spec_len += NB * r.frames;
+    }
+    if (signal_len > std.math.maxInt(u32) or spec_len > std.math.maxInt(u32)) return error.BatchTooLarge;
+    if (frames.items.len == 0) return;
+
+    const lane = ga.acquire();
+    defer lane.release();
+    const dev = lane.device;
+    var scope = dev.arena();
+    defer scope.deinit();
+    const plans = try ga.allocator.alloc(PairPlan, prepared.refs.len);
+    defer ga.allocator.free(plans);
+    var off: usize = 0;
+    for (plans, prepared.refs) |*pl, r| {
+        pl.* = .{ .ref = r.samples, .deg = &.{}, .ref_off = off };
+        off += r.samples.len;
+    }
+    const sig = try uploadSignals(precision, ga, lane, &scope, plans, signal_len);
+    var tables = try GpuAccel.FilterTables(precision).init(ga.allocator, params);
+    defer tables.deinit(ga.allocator);
+    const filter = try tables.upload(&scope);
+    const raw = try scope.alloc(T, .readback, spec_len);
+    const d_frames = try scope.allocInit(kernels.Frame, frames.items);
+    if (precision == .balanced) {
+        try dev.dispatch1d(lane.kbal.?.gammatone_frames_bal, frames.items.len * NB, .{ .signals = sig.hi, .signals_lo = sig.lo, .frames = d_frames, .coeffs = filter.coeffs, .hann = filter.hann, .out = raw, .num_frames = u(frames.items.len), .num_bands = NB, .window_size = u(window) });
+    } else {
+        try dev.dispatch1d(lane.real(T, "gammatone_frames"), frames.items.len * NB, .{ .signals = sig.hi, .frames = d_frames, .coeffs = filter.coeffs, .hann = filter.hann, .out = raw, .num_frames = u(frames.items.len), .num_bands = NB, .window_size = u(window) });
+    }
+    const cache = try ga.allocator.create(DeviceRefs(precision));
+    errdefer ga.allocator.destroy(cache);
+    cache.* = .{ .ga = ga };
+    errdefer cache.freeHost();
+    cache.spec = try ga.allocator.alloc(T, spec_len);
+    try dev.download(raw, 0, cache.spec);
+    cache.hi = try ga.allocator.alloc(T, signal_len);
+    cache.lo = try ga.allocator.alloc(f32, if (precision == .balanced) signal_len else 0);
+    var at: usize = 0;
+    var spec_at: usize = 0;
+    for (prepared.refs) |*r| {
+        GpuAccel.splitInto(T, r.samples, cache.hi[at..][0..r.samples.len], if (precision == .balanced) cache.lo[at..][0..r.samples.len] else null);
+        r.cache = cache;
+        r.signal_off = at;
+        r.spec_off = spec_at;
+        at += r.samples.len;
+        spec_at += NB * r.frames;
+    }
+    prepared.cache = cache;
+    prepared.free_cache = DeviceRefs(precision).destroy;
+}
+
+/// `prepare`'s references on the device: samples (with their lo parts in
+/// balanced precision) and spectrograms, end to end. Each lane uploads its
+/// copy the first time it scores them; the host keeps one to upload from.
+fn DeviceRefs(comptime precision: visqol.Precision) type {
+    const T = GpuAccel.Real(precision);
+    return struct {
+        const Self = @This();
+        const Copy = struct { hi: zimt.Buffer(T), lo: zimt.Buffer(f32), spec: zimt.Buffer(T) };
+
+        ga: *GpuAccel,
+        hi: []T = &.{},
+        lo: []f32 = &.{},
+        spec: []T = &.{},
+        lanes: [engine.MAX_LANES]?Copy = @splat(null),
+
+        /// `lane`'s copy; the caller holds the lane.
+        fn on(self: *Self, lane: *Lane) !Copy {
+            const i = for (self.ga.lanes, 0..) |l, i| {
+                if (l == lane) break i;
+            } else unreachable;
+            if (self.lanes[i]) |c| return c;
+            const dev = lane.device;
+            const hi = try dev.allocInit(T, self.hi);
+            errdefer dev.free(hi);
+            const lo = try dev.allocInit(f32, if (self.lo.len > 0) self.lo else &.{0});
+            errdefer dev.free(lo);
+            self.lanes[i] = .{ .hi = hi, .lo = lo, .spec = try dev.allocInit(T, self.spec) };
+            return self.lanes[i].?;
+        }
+
+        fn freeHost(self: *Self) void {
+            const a = self.ga.allocator;
+            a.free(self.hi);
+            a.free(self.lo);
+            a.free(self.spec);
+        }
+
+        fn destroy(ptr: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            const io = std.Options.debug_io;
+            for (self.lanes, 0..) |entry, i| if (entry) |c| {
+                const lane = self.ga.lanes[i].?;
+                lane.mutex.lockUncancelable(io);
+                defer lane.mutex.unlock(io);
+                lane.device.free(c.hi);
+                lane.device.free(c.lo);
+                lane.device.free(c.spec);
+            };
+            self.freeHost();
+            self.ga.allocator.destroy(self);
+        }
+    };
+}
+
+/// `dst[dst_off ..+ n] = src[src_off ..+ n]` on `lane`.
+fn copy(comptime T: type, lane: *Lane, src: zimt.Buffer(T), src_off: usize, dst: zimt.Buffer(T), dst_off: usize, n: usize) !void {
+    if (n == 0) return;
+    try lane.device.dispatch1d(lane.real(T, "copy"), n, .{ .src = src, .dst = dst, .src_off = u(src_off), .dst_off = u(dst_off), .n = u(n) });
 }
 
 /// The signals buffer, and in balanced precision its lo parts.
@@ -330,7 +492,7 @@ fn uploadSignals(comptime precision: visqol.Precision, ga: *GpuAccel, lane: *Lan
         .lo = try scope.alloc(f32, .device, if (precision == .balanced) @max(len, 1) else 1),
     };
     for (plans) |pl| {
-        for ([_][]const f64{ pl.ref, pl.deg }, [_]usize{ pl.ref_off, pl.deg_off }) |x, at| {
+        for ([_][]const f64{ if (pl.prepared != null) &.{} else pl.ref, pl.deg }, [_]usize{ pl.ref_off, pl.deg_off }) |x, at| {
             if (x.len == 0) continue;
             if (T == f64) {
                 try dev.upload(out.hi, at, x);
@@ -433,6 +595,8 @@ fn runModel(
     scope: *zimt.Arena,
     plans: []const PairPlan,
     sig: Signals(precision),
+    /// Prepared refs' spectrograms (`DeviceRefs`).
+    ref_specs: ?zimt.Buffer(GpuAccel.Real(precision)),
     params: accel.SpecParams,
     options: visqol.Options,
     patch_size: usize,
@@ -490,7 +654,9 @@ fn runModel(
         defer a.free(specs);
         for (live.items, specs) |i, *sp| {
             const pl = plans[i];
-            for (0..pl.nf_ref) |f| try frames.append(a, .{ .start = u(pl.ref_off + f * hop), .out = u(pl.ref_spec + f), .stride = u(pl.nf_ref) });
+            if (pl.prepared) |pr| {
+                try copy(T, lane, ref_specs.?, pr.spec_off, raw, pl.ref_spec, NB * pl.nf_ref);
+            } else for (0..pl.nf_ref) |f| try frames.append(a, .{ .start = u(pl.ref_off + f * hop), .out = u(pl.ref_spec + f), .stride = u(pl.nf_ref) });
             for (0..pl.nf_deg) |f| try frames.append(a, .{ .start = u(pl.al_off + f * hop), .out = u(pl.deg_spec + f), .stride = u(pl.nf_deg) });
             sp.* = .{ .ref_off = u(pl.ref_spec), .ref_frames = u(pl.nf_ref), .deg_off = u(pl.deg_spec), .deg_frames = u(pl.nf_deg) };
         }
@@ -1356,7 +1522,7 @@ test "device pipeline: f64 reproduces the CPU bit for bit, f32 closely" {
             var want = try v.measure(ref.samples, deg.samples, ref.sample_rate);
             defer want.deinit();
             var got: [1]anyerror!visqol.Result = undefined;
-            try measureBatch(ga, &v, &.{.{ .ref = ref.samples, .deg = deg.samples }}, ref.sample_rate, &got, null);
+            try measureBatch(ga, &v, &.{.{ .ref = ref.samples, .deg = deg.samples }}, ref.sample_rate, &got, null, null);
             var g = try got[0];
             defer g.deinit();
             try expectResult(precision == .exact, want, g);
@@ -1369,7 +1535,7 @@ test "device pipeline: f64 reproduces the CPU bit for bit, f32 closely" {
 
 fn mosOf(ga: *GpuAccel, v: *visqol.Visqol, ref: []const f64, deg: []const f64, sample_rate: u32, grad: ?[]f64) !visqol.Result {
     var got: [1]anyerror!visqol.Result = undefined;
-    try measureBatch(ga, v, &.{.{ .ref = ref, .deg = deg }}, sample_rate, &got, if (grad) |g| &.{g} else null);
+    try measureBatch(ga, v, &.{.{ .ref = ref, .deg = deg }}, sample_rate, &got, if (grad) |g| &.{g} else null, null);
     return got[0];
 }
 

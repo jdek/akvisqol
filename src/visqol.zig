@@ -191,6 +191,58 @@ pub const Result = struct {
 
 pub const Pair = struct { ref: []const f64, deg: []const f64 };
 
+/// A reference to score many degraded signals against
+/// (`backend.Engine.prepare`). On a device scoring the model
+/// (`gpu/pipeline.zig`), also what depends only on it: its energy and
+/// patches here, and its samples and spectrogram on the device (`cache`,
+/// from `signal_off` and `spec_off`).
+pub const PreparedRef = struct {
+    samples: []f64,
+    energy: f64 = 0,
+    frames: usize = 0,
+    indices: []usize = &.{},
+    cache: ?*anyopaque = null,
+    signal_off: usize = 0,
+    spec_off: usize = 0,
+};
+
+/// References for `backend.Engine.measurePrepared`.
+pub const Prepared = struct {
+    refs: []PreparedRef,
+    sample_rate: u32,
+    /// The engine's, which `measurePrepared` must match.
+    precision: Precision,
+    mode: Mode,
+    allocator: std.mem.Allocator,
+    /// The device side (`PreparedRef.cache`), and how to free it.
+    cache: ?*anyopaque = null,
+    free_cache: ?*const fn (*anyopaque) void = null,
+
+    /// Copies of `refs`, nothing computed yet.
+    pub fn init(allocator: std.mem.Allocator, refs: []const []const f64, sample_rate: u32, precision: Precision, mode: Mode) !Prepared {
+        const out = try allocator.alloc(PreparedRef, refs.len);
+        var done: usize = 0;
+        errdefer {
+            for (out[0..done]) |*r| allocator.free(r.samples);
+            allocator.free(out);
+        }
+        for (refs, out) |r, *o| {
+            o.* = .{ .samples = try allocator.dupe(f64, r) };
+            done += 1;
+        }
+        return .{ .refs = out, .sample_rate = sample_rate, .precision = precision, .mode = mode, .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Prepared) void {
+        if (self.cache) |c| self.free_cache.?(c);
+        for (self.refs) |r| {
+            self.allocator.free(r.samples);
+            self.allocator.free(r.indices);
+        }
+        self.allocator.free(self.refs);
+    }
+};
+
 /// Not thread-safe (holds per-rate caches); use one per thread.
 pub const Visqol = struct {
     allocator: std.mem.Allocator,

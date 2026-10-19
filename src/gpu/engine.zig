@@ -66,14 +66,14 @@ pub const Engine = struct {
 
     pub fn measure(self: *Engine, ref: []const f64, deg: []const f64, sample_rate: u32) !visqol.Result {
         var out: [1]anyerror!visqol.Result = undefined;
-        try self.score(&self.main, &.{.{ .ref = ref, .deg = deg }}, sample_rate, &out, null);
+        try self.score(&self.main, &.{.{ .ref = ref, .deg = deg }}, sample_rate, &out, null, null);
         return out[0];
     }
 
     /// On the device where it can (`pipeline.applies`), else the CPU model
     /// with the GPU as its `Accelerator` (no gradients there).
-    fn score(self: *Engine, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
-        if (pipeline.applies(self.gpu_accel)) return pipeline.measureBatch(self.gpu_accel, v, pairs, sample_rate, results, grads);
+    fn score(self: *Engine, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64, refs: ?[]const visqol.PreparedRef) !void {
+        if (pipeline.applies(self.gpu_accel)) return pipeline.measureBatch(self.gpu_accel, v, pairs, sample_rate, results, grads, refs);
         if (grads != null) return error.Unsupported;
         return v.measureBatch(pairs, sample_rate, self.gpu_accel.accelerator(), results);
     }
@@ -83,6 +83,7 @@ pub const Engine = struct {
         pairs: []const visqol.Pair,
         results: []anyerror!visqol.Result,
         grads: ?[]const []f64,
+        refs: ?[]const visqol.PreparedRef,
         sample_rate: u32,
         chunk: usize,
         next: std.atomic.Value(usize) = .init(0),
@@ -96,7 +97,8 @@ pub const Engine = struct {
             if (lo >= shared.pairs.len) return;
             const hi = @min(lo + shared.chunk, shared.pairs.len);
             const grads = if (shared.grads) |g| g[lo..hi] else null;
-            shared.engine.score(v, shared.pairs[lo..hi], shared.sample_rate, shared.results[lo..hi], grads) catch |e| {
+            const refs = if (shared.refs) |r| r[lo..hi] else null;
+            shared.engine.score(v, shared.pairs[lo..hi], shared.sample_rate, shared.results[lo..hi], grads, refs) catch |e| {
                 for (shared.results[lo..hi]) |*r| r.* = e;
                 shared.failed = e;
             };
@@ -123,24 +125,46 @@ pub const Engine = struct {
     /// Lock-step chunks, up to `num_threads` concurrently, so CPU stages
     /// use every core while the accelerator batches kernels per chunk.
     pub fn measureBatch(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result) !void {
-        return self.batch(pairs, sample_rate, num_threads, results, null);
+        return self.batch(pairs, sample_rate, num_threads, results, null, null);
+    }
+
+    /// `refs` for `measurePrepared`; where the model runs on the device,
+    /// each one's patches, energy and spectrogram are computed once.
+    pub fn prepare(self: *Engine, refs: []const []const f64, sample_rate: u32) !visqol.Prepared {
+        var prepared = try visqol.Prepared.init(self.allocator, refs, sample_rate, self.options.precision, self.options.mode);
+        errdefer prepared.deinit();
+        if (pipeline.applies(self.gpu_accel)) try pipeline.prepare(self.gpu_accel, &self.main, &prepared);
+        return prepared;
+    }
+
+    /// `degs[i]` against `prepared.refs[i]`, as `measureBatch` (or, with
+    /// `grads`, `measureBatchGrad`) would score them.
+    pub fn measurePrepared(self: *Engine, prepared: *const visqol.Prepared, degs: []const []const f64, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
+        std.debug.assert(degs.len == prepared.refs.len);
+        if (prepared.precision != self.options.precision or prepared.mode != self.options.mode) return error.InvalidInput;
+        if (grads != null and !pipeline.applies(self.gpu_accel)) return error.Unsupported;
+        const pairs = try self.allocator.alloc(visqol.Pair, degs.len);
+        defer self.allocator.free(pairs);
+        for (pairs, prepared.refs, degs) |*p, r, d| p.* = .{ .ref = r.samples, .deg = d };
+        const cached = prepared.cache != null and pipeline.applies(self.gpu_accel);
+        return self.batch(pairs, prepared.sample_rate, num_threads, results, grads, if (cached) prepared.refs else null);
     }
 
     /// `measureBatch`, with ∂moslqo/∂deg of each pair into `grads` (each its
     /// deg's length; `pipeline.measureBatch` has the details).
     pub fn measureBatchGrad(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result, grads: []const []f64) !void {
         if (!pipeline.applies(self.gpu_accel)) return error.Unsupported;
-        return self.batch(pairs, sample_rate, num_threads, results, grads);
+        return self.batch(pairs, sample_rate, num_threads, results, grads, null);
     }
 
-    fn batch(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
+    fn batch(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64, refs: ?[]const visqol.PreparedRef) !void {
         if (pairs.len == 0) return;
         const cpus = std.Thread.getCpuCount() catch 1;
         const want: usize = if (num_threads == 0) cpus else num_threads;
         const chunk = std.math.clamp(std.math.divCeil(usize, pairs.len, want) catch 1, 1, MAX_CHUNK);
         const chunks = std.math.divCeil(usize, pairs.len, chunk) catch unreachable;
         const n_threads = @max(1, @min(want, chunks));
-        var shared: Shared = .{ .engine = self, .pairs = pairs, .results = results, .grads = grads, .sample_rate = sample_rate, .chunk = chunk };
+        var shared: Shared = .{ .engine = self, .pairs = pairs, .results = results, .grads = grads, .refs = refs, .sample_rate = sample_rate, .chunk = chunk };
         const threads = try self.allocator.alloc(std.Thread, n_threads - 1);
         defer self.allocator.free(threads);
         var spawned: usize = 0;
@@ -159,7 +183,7 @@ pub const FFT_BATCH_POINTS: usize = 1 << 22;
 const FFT_MIN_POINTS: usize = 1 << 10;
 
 /// `VISQOL_GPU_LANES` sets the limit (default `defaultLanes`).
-const MAX_LANES = 4;
+pub const MAX_LANES = 4;
 
 /// CUDA lanes are streams on one context; Vulkan and Metal lanes are whole
 /// devices, which past two cost more than they overlap (Vulkan, RTX 3080).
@@ -218,6 +242,7 @@ pub const GpuAccel = struct {
         spec_grad_f32: zimt.Kernel(kernels.spec_grad_f32),
         gammatone_bwd_f32: zimt.Kernel(kernels.gammatone_bwd_f32),
         signal_grad_f32: zimt.Kernel(kernels.signal_grad_f32),
+        copy_f32: zimt.Kernel(kernels.copy_f32),
         dp_search_f32: zimt.Kernel(kernels.dp_search_f32),
         match_rows_f32: zimt.Kernel(kernels.match_rows_f32),
         match_finalize_f32: zimt.Kernel(kernels.match_finalize_f32),
@@ -261,6 +286,7 @@ pub const GpuAccel = struct {
         spec_grad_f64: zimt.Kernel(kernels.spec_grad_f64),
         gammatone_bwd_f64: zimt.Kernel(kernels.gammatone_bwd_f64),
         signal_grad_f64: zimt.Kernel(kernels.signal_grad_f64),
+        copy_f64: zimt.Kernel(kernels.copy_f64),
         dp_search_f64: zimt.Kernel(kernels.dp_search_f64),
         match_rows_f64: zimt.Kernel(kernels.match_rows_f64),
         match_finalize_f64: zimt.Kernel(kernels.match_finalize_f64),
@@ -1757,4 +1783,72 @@ test "balanced gammatone tracks the f64 filterbank to f32 rounding" {
             try std.testing.expect(errs[1] < 2e-7);
         }
     }
+}
+
+test "prepared references score as unprepared, bit for bit" {
+    const allocator = std.testing.allocator;
+    const audio = @import("../audio.zig");
+    const sub = "tests/data/conformance_testdata_subset/";
+    const files = [_][2][]const u8{
+        .{ sub ++ "strauss48_stereo.wav", sub ++ "strauss48_stereo_lp35.wav" },
+        .{ sub ++ "contrabassoon48_stereo.wav", sub ++ "contrabassoon48_stereo_24kbps_aac.wav" },
+        .{ sub ++ "steely48_stereo.wav", sub ++ "steely48_stereo_lp7.wav" },
+    };
+    var sigs: [files.len][2]audio.Audio = undefined;
+    var loaded: usize = 0;
+    defer for (sigs[0..loaded]) |*p| {
+        p[0].deinit();
+        p[1].deinit();
+    };
+    for (files, &sigs) |f, *s| {
+        s[0] = audio.loadAsMono(allocator, f[0]) catch return error.SkipZigTest;
+        s[1] = audio.loadAsMono(allocator, f[1]) catch {
+            s[0].deinit();
+            return error.SkipZigTest;
+        };
+        loaded += 1;
+    }
+    var refs: [files.len][]const f64 = undefined;
+    var degs: [files.len][]const f64 = undefined;
+    var pairs: [files.len]visqol.Pair = undefined;
+    for (sigs, &refs, &degs, &pairs) |s, *r, *d, *p| {
+        r.* = s[0].samples;
+        d.* = s[1].samples;
+        p.* = .{ .ref = r.*, .deg = d.* };
+    }
+    var ran = false;
+    for ([_]backend.Kind{ .cuda, .vulkan, .metal }) |kind| for ([_]visqol.Precision{ .exact, .balanced, .fast }) |precision| {
+        const options: visqol.Options = .{ .mode = .audio, .precision = precision };
+        var e = Engine.init(allocator, kind, options, backend.defaultModel(options)) catch continue;
+        defer e.deinit();
+        const gradients = pipeline.applies(e.gpu_accel);
+        var want: [files.len]anyerror!visqol.Result = undefined;
+        var got: [files.len]anyerror!visqol.Result = undefined;
+        var g_want: [files.len][]f64 = undefined;
+        var g_got: [files.len][]f64 = undefined;
+        for (&g_want, &g_got, degs) |*a, *b, d| {
+            a.* = try allocator.alloc(f64, d.len);
+            b.* = try allocator.alloc(f64, d.len);
+        }
+        defer for (g_want, g_got) |a, b| {
+            allocator.free(a);
+            allocator.free(b);
+        };
+        if (gradients) try e.measureBatchGrad(&pairs, 48000, 2, &want, &g_want) else try e.measureBatch(&pairs, 48000, 2, &want);
+        var prepared = try e.prepare(&refs, 48000);
+        defer prepared.deinit();
+        try e.measurePrepared(&prepared, &degs, 2, &got, if (gradients) &g_got else null);
+        for (&want, &got) |*w, *gt| {
+            var x = try w.*;
+            defer x.deinit();
+            var y = try gt.*;
+            defer y.deinit();
+            try std.testing.expectEqual(x.moslqo, y.moslqo);
+            try std.testing.expectEqualSlices(f64, x.fvnsim, y.fvnsim);
+            try std.testing.expectEqualSlices(f64, x.patch_band_data, y.patch_band_data);
+        }
+        if (gradients) for (g_want, g_got) |a, b| try std.testing.expectEqualSlices(f64, a, b);
+        ran = true;
+    };
+    if (!ran) return error.SkipZigTest;
 }

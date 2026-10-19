@@ -81,6 +81,23 @@ pub const Engine = union(Kind) {
         };
     }
 
+    /// `refs` to score many degraded signals against (`measurePrepared`);
+    /// on a device scoring the model, each one's patches, energy and
+    /// spectrogram are computed once here.
+    pub fn prepare(self: *Engine, refs: []const []const f64, sample_rate: u32) !visqol.Prepared {
+        return switch (self.*) {
+            inline else => |*e| e.prepare(refs, sample_rate),
+        };
+    }
+
+    /// `degs[i]` against `prepared.refs[i]` (from this engine's `prepare`):
+    /// `measureBatch`'s scores, and with `grads` `measureBatchGrad`'s.
+    pub fn measurePrepared(self: *Engine, prepared: *const visqol.Prepared, degs: []const []const f64, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
+        return switch (self.*) {
+            inline else => |*e| e.measurePrepared(prepared, degs, num_threads, results, grads),
+        };
+    }
+
     /// `measureBatch`, with ∂moslqo/∂deg of each pair into `grads` (each as
     /// long as its deg), the discrete choices (lags, matches, realignment)
     /// held fixed. GPU backends that score on the device only (not exact
@@ -110,6 +127,12 @@ else
         pub fn measureBatchGrad(_: *GpuEngine, _: []const Pair, _: u32, _: u32, _: []anyerror!visqol.Result, _: []const []f64) !void {
             return Error.BackendUnavailable;
         }
+        pub fn prepare(_: *GpuEngine, _: []const []const f64, _: u32) !visqol.Prepared {
+            return Error.BackendUnavailable;
+        }
+        pub fn measurePrepared(_: *GpuEngine, _: *const visqol.Prepared, _: []const []const f64, _: u32, _: []anyerror!visqol.Result, _: ?[]const []f64) !void {
+            return Error.BackendUnavailable;
+        }
     };
 
 pub const CpuEngine = struct {
@@ -133,6 +156,19 @@ pub const CpuEngine = struct {
 
     pub fn measure(self: *CpuEngine, ref: []const f64, deg: []const f64, sample_rate: u32) !visqol.Result {
         return self.main.measure(ref, deg, sample_rate);
+    }
+
+    /// Copies only: the CPU model computes per pair.
+    pub fn prepare(self: *CpuEngine, refs: []const []const f64, sample_rate: u32) !visqol.Prepared {
+        return visqol.Prepared.init(self.allocator, refs, sample_rate, self.options.precision, self.options.mode);
+    }
+
+    pub fn measurePrepared(self: *CpuEngine, prepared: *const visqol.Prepared, degs: []const []const f64, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
+        if (grads != null) return error.Unsupported;
+        const pairs = try self.allocator.alloc(Pair, degs.len);
+        defer self.allocator.free(pairs);
+        for (pairs, prepared.refs, degs) |*p, r, d| p.* = .{ .ref = r.samples, .deg = d };
+        return self.measureBatch(pairs, prepared.sample_rate, num_threads, results);
     }
 
     const Shared = struct {

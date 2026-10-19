@@ -167,6 +167,7 @@ const kernels = [_]zimt.Entry{
     real(.{ "spec_prep", "spec_prep_bwd" }, "spec_prep") ++
     real(.{ "deg_plane", "ref_terms", "nsim_table", "nsim_bands", "nsim_bands_bwd", "nsim_cells_bwd", "spec_grad" }, "nsim") ++
     real(.{ "gammatone_bwd", "signal_grad" }, "gammatone_bwd") ++
+    real(.{"copy"}, "copy") ++
     real(.{ "dp_search", "match_rows", "match_finalize" }, "dp") ++
     real(.{ "spl_energy", "apply_lag" }, "pre") ++
     real(.{ "realign_rows", "realign_frames", "realign_accept" }, "realign") ++

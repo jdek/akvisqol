@@ -214,7 +214,7 @@ Batches spread over several GPU lanes (zimt devices: streams on CUDA,
 queues on Vulkan and Metal) so worker threads overlap their transfers and
 kernels; up to 4 on CUDA and 2 elsewhere, `VISQOL_GPU_LANES=N` to change.
 
-### Gradients
+### Gradients and prepared references
 
 `backend.Engine.measureBatchGrad` (Zig) also returns ∂moslqo/∂deg, each
 pair's gradient as long as its degraded signal, wherever the model runs on
@@ -235,6 +235,13 @@ fast and balanced stay within ~1e-3 of it. It costs about one more fast
 forward pass: on the 130 pairs above (CUDA, without WAV decoding), score
 plus gradient takes 7.0 s exact, 1.3 s balanced and 0.60 s fast, against
 3.6 s, 1.0 s and 0.33 s for the score alone.
+
+`Engine.prepare` takes references to score many degraded signals against
+(`measurePrepared`, with or without gradients): each one's patches,
+energy and spectrogram are computed once, and each GPU lane keeps the
+samples and spectrograms on the device. Scores are those of
+`measureBatch`, bit for bit; on the 130 pairs above that takes CUDA from
+3.6 s to 2.2 s exact, 0.99 s to 0.58 s balanced and 0.32 s to 0.25 s fast.
 
 ## Development
 
