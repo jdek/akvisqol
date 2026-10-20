@@ -136,7 +136,7 @@ pub const SearchPlan = struct {
     num_patches: usize,
     lo: []usize,
     hi: []usize,
-    /// `[num_patches][nf_deg]`, filled by `accel.patchSimilarities`.
+    /// `[num_patches][nf_deg]`, filled by `accel.Cpu.patchSimilarities`.
     sims: []f64,
     nf_deg: usize,
     search_window: i64,
@@ -371,7 +371,7 @@ pub fn findOptimalDegPatches(
     var plan = try planSearch(allocator, ref_patch_indices, num_frames_ref, num_frames_deg, patch_size, search_window_radius);
     defer plan.deinit();
     var cpu: accel.Cpu = .{ .allocator = allocator };
-    try cpu.accelerator().patchSimilarities(&.{.{
+    try cpu.patchSimilarities(&.{.{
         .ref_spec = ref_spec,
         .nf_ref = num_frames_ref,
         .deg_spec = deg_spec,

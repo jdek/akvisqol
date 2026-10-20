@@ -26,8 +26,9 @@ const usage =
     \\  --backend cpu|metal|cuda|vulkan   compute backend (default cpu)
     \\  --threads N                       batch worker threads (default: all cores)
     \\  --precision exact|balanced|fast   GPU arithmetic: f64, the CPU's scores bit for
-    \\                                    bit (default); f32 with two-float where f32
-    \\                                    loses most; or f32
+    \\                                    bit (on the CPU without f64); f32 with
+    \\                                    two-float where f32 loses most; or f32
+    \\                                    (default: exact with f64, else fast)
     \\
 ;
 

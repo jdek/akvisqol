@@ -23,6 +23,8 @@ const E_SIGNAL: c_int = -5;
 const E_BACKEND: c_int = -6;
 const E_INTERNAL: c_int = -7;
 
+const PRECISION_AUTO: u32 = 3;
+
 pub const Options = extern struct {
     mode: u32,
     search_window_radius: i32,
@@ -32,7 +34,7 @@ pub const Options = extern struct {
     use_lattice_model: u8,
     model_path: ?[*:0]const u8,
     backend: u32,
-    precision: u32 = 0,
+    precision: u32 = PRECISION_AUTO,
 };
 
 pub const Patch = extern struct {
@@ -142,7 +144,7 @@ export fn visqol_options_default(opts: ?*Options) void {
         .use_lattice_model = 1,
         .model_path = null,
         .backend = 0,
-        .precision = 0,
+        .precision = PRECISION_AUTO,
     };
 }
 
@@ -168,7 +170,7 @@ export fn visqol_create(opts_in: ?*const Options, out: ?*?*Ctx) c_int {
         setError("invalid backend {d}", .{opts.backend});
         return E_INVALID_ARGUMENT;
     };
-    const precision = std.enums.fromInt(visqol.Precision, opts.precision) orelse {
+    const precision: ?visqol.Precision = if (opts.precision == PRECISION_AUTO) null else std.enums.fromInt(visqol.Precision, opts.precision) orelse {
         setError("invalid precision {d}", .{opts.precision});
         return E_INVALID_ARGUMENT;
     };

@@ -14,7 +14,6 @@ const svr = @import("svr.zig");
 const lattice = @import("lattice.zig");
 const vad = @import("vad.zig");
 const accel = @import("accel.zig");
-pub const Accelerator = accel.Accelerator;
 
 pub const constants = struct {
     pub const NUM_BANDS_AUDIO: usize = 32;
@@ -44,9 +43,9 @@ pub const Error = error{
 pub const Mode = enum(u8) { audio = 0, speech = 1 };
 
 /// Of GPU backends (the CPU is always exact). `.exact`: the CPU's results
-/// bit for bit where the device has f64 (else f32 hot spots, f64 lags).
-/// `.fast`: f32 throughout. `.balanced`: f32, with two-float signals,
-/// gammatone filterbank, dB conversion and NSIM band statistics.
+/// bit for bit (on the CPU without f64). `.fast`: f32 throughout.
+/// `.balanced`: f32, with two-float signals, gammatone filterbank, dB
+/// conversion and NSIM band statistics.
 pub const Precision = enum(u8) { exact = 0, fast = 1, balanced = 2 };
 
 pub const Options = struct {
@@ -59,7 +58,8 @@ pub const Options = struct {
     use_lattice_model: bool = false,
     disable_global_alignment: bool = false,
     disable_realignment: bool = false,
-    precision: Precision = .exact,
+    /// Null: exact with f64, else fast.
+    precision: ?Precision = null,
 };
 
 pub const QualityMapper = union(enum) {
@@ -295,16 +295,16 @@ pub const Visqol = struct {
     /// Score two mono f64 signals at a shared sample rate.
     pub fn measure(self: *Visqol, ref: []const f64, deg: []const f64, sample_rate: u32) !Result {
         var out: [1]anyerror!Result = undefined;
-        try self.measureBatch(&.{.{ .ref = ref, .deg = deg }}, sample_rate, self.cpu.accelerator(), &out);
+        try self.measureBatch(&.{.{ .ref = ref, .deg = deg }}, sample_rate, &out);
         return out[0];
     }
 
-    /// Score pairs in lock-step, batching each stage on `acc`. Per-pair
-    /// errors land in `results[i]`; accelerator errors fail the call.
-    pub fn measureBatch(self: *Visqol, pairs: []const Pair, sample_rate: u32, acc: accel.Accelerator, results: []anyerror!Result) !void {
+    /// Score pairs in lock-step, batching each stage. Per-pair errors land
+    /// in `results[i]`.
+    pub fn measureBatch(self: *Visqol, pairs: []const Pair, sample_rate: u32, results: []anyerror!Result) !void {
         std.debug.assert(results.len == pairs.len);
         switch (self.impl) {
-            inline else => |*p| return p.runBatch(pairs, sample_rate, self.options, self.mapper, acc, results),
+            inline else => |*p| return p.runBatch(pairs, sample_rate, self.options, self.mapper, &self.cpu, results),
         }
     }
 
@@ -397,7 +397,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             sample_rate: u32,
             options: Options,
             mapper: QualityMapper,
-            acc: accel.Accelerator,
+            cpu: *accel.Cpu,
             results: []anyerror!Result,
         ) !void {
             if (sample_rate == 0) return Error.InvalidInput;
@@ -430,7 +430,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
                     if (pair.ref.len == 0 or pair.deg.len == 0) continue;
                     try lag_jobs.append(allocator, .{ .a = pair.ref, .b = pair.deg, .out = &st.lag });
                 }
-                try acc.bestLags(lag_jobs.items);
+                try cpu.bestLags(lag_jobs.items);
             }
 
             // 2: apply lag, SPL match, queue spectrograms.
@@ -442,7 +442,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             }
 
             // 3: gammatone spectrograms.
-            try acc.spectrograms(spec_params, spec_jobs.items);
+            try cpu.spectrograms(spec_params, spec_jobs.items);
 
             // 4-5: normalise, ref patch indices, DP plan.
             var sim_jobs: std.ArrayList(accel.SimJob) = .empty;
@@ -455,7 +455,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             }
 
             // 6a: DP similarity matrix.
-            try acc.patchSimilarities(sim_jobs.items);
+            try cpu.patchSimilarities(sim_jobs.items);
 
             // 6b: DP backtrace; queue every patch's realignment.
             var realign_jobs: std.ArrayList(accel.RealignJob) = .empty;
@@ -468,7 +468,7 @@ pub fn Pipeline(comptime NUM_BANDS: usize) type {
             }
 
             // 7: realign patches (lag, trim, spectrograms), rescore.
-            try acc.realign(spec_params, sample_rate, realign_jobs.items);
+            try cpu.realignPatches(spec_params, sample_rate, realign_jobs.items);
             for (states) |*st| {
                 if (!st.live()) continue;
                 if (st.realign) |*rp| realign_mod.finishRealign(NUM_BANDS, allocator, rp, &st.matches.?, sample_rate) catch |e| {

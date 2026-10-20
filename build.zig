@@ -145,9 +145,7 @@ fn sharedName(os: std.Target.Os.Tag) []const u8 {
 }
 
 const kernels = [_]zimt.Entry{
-    // f32 only: the FFT lag search, and the hybrid path's DP similarities.
-    .{ .name = "ref_stats" },
-    .{ .name = "patch_sims" },
+    // f32 only: the FFT lag search.
     .{ .name = "fft_radix2", .source = "fft", .entry = "fft_pass<Radix2>" },
     .{ .name = "fft_radix4", .source = "fft", .entry = "fft_pass<Radix4>" },
     .{ .name = "fft_radix16", .source = "fft", .entry = "fft_pass<Radix16>" },

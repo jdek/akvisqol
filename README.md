@@ -8,7 +8,7 @@ packages are `akvisqol`; the drop-in surfaces keep upstream's names
 
 - **Conformant**: within ~1e-13 MOS of Google's C++ on the CPU, C++ quirks
   included ([Verification](#verification)).
-- **Fast**: 20–39× Google's C++ and Python on the same cores, 77–86× with
+- **Fast**: 20–39× Google's C++ and Python on the same cores, 89–100× with
   Metal on audio, 4–6× visqol-python ([Performance](#performance)).
 - **Drop-in**: Google's `visqol_lib_py`, visqol-python's `VisqolApi`, and
   Google's C++ `VisqolManager` / `VisqolApi`.
@@ -96,7 +96,7 @@ the CA01 pair at 16 kHz.
 | API | implementation | startup (s) | audio, 1T | audio, 8T | speech, 1T | speech, 8T | lattice, 8T |
 |---|---|---:|---:|---:|---:|---:|---:|
 | CLI / C | **this, CPU** | 0.01 | **0.346** | **0.081** | **0.055** | **0.013** | **0.012** |
-| CLI / C | **this, Metal** | 0.05 | – | **0.030** | **0.013** | **0.006** | **0.006** |
+| CLI / C | **this, Metal** | 0.06 | – | **0.026** | **0.009** | **0.005** | **0.006** |
 | C++ | **this** | 0.03 | **0.349** | **0.079** | **0.056** | **0.012** | **0.012** |
 | C++ | Google v3.3.3 | 0.01 | 13.410 | 2.589 | 1.445 | 0.257 | 0.249 |
 | C++ | Google v3.3.3, LTO | 0.05 | 11.806 | 2.304 | 1.377 | 0.246 | 0.243 |
@@ -122,11 +122,11 @@ Google's C++ on the same pairs and against Google's conformance values:
 | implementation | vs C++: audio | speech | lattice | vs conformance: audio | speech | lattice |
 |---|---:|---:|---:|---:|---:|---:|
 | **this, CPU** (every API) | 8.1e-14 | 5.7e-13 | 3.2e-05 | 7.3e-14 | 5.7e-13 | 3.3e-06 |
-| **this, Metal** | 5.1e-07 | 1.2e-07 | 3.0e-05 | 5.1e-07 | 1.2e-07 | 5.5e-06 |
+| **this, Metal** | 3.0e-07 | 5.0e-08 | 3.0e-05 | 3.0e-07 | 5.0e-08 | 5.5e-06 |
 | Google C++ / `visqol_lib_py` | 0 | 0 | 0 | 1.1e-14 | 0 | 3.6e-05 |
 | visqol-python 3.8.0 | 1.2e-04 | 1.1e-03 | 2.4e-03 | 1.2e-04 | 1.1e-03 | 2.4e-03 |
 
-- **Metal** kernels are f32 (see [Backends](#backends)). CUDA and Vulkan
+- **Metal** runs fast by default (see [Backends](#backends)). CUDA and Vulkan
   match the CPU bit for bit in f64, and within ~1e-7 (balanced) or ~5e-7
   (fast) in f32.
 - **Lattice** gaps come from the summation order of the model's 4,096-term
@@ -180,20 +180,21 @@ reads back the global lags (to plan frames, patches and VAD) and, at the
 end, each patch's match and statistics, which the CPU's code maps to a
 score. Each kernel builds from one source per precision:
 
-- `--precision exact` (default) runs them in f64 with the CPU's operation
-  order and no FMA contraction, and gives the CPU's results bit for bit
-  (CUDA, and Vulkan with `shaderFloat64`; tested on an RTX 3080 and
+- `--precision exact` (default with f64) runs them in f64 with the CPU's
+  operation order and no FMA contraction, and gives the CPU's results bit
+  for bit (CUDA, and Vulkan with `shaderFloat64`; tested on an RTX 3080 and
   lavapipe). Consumer GPUs run f64 at a fraction of f32's rate, so this
   mode is about as fast as the CPU on all cores there.
-- `--precision fast` runs them in f32 (delta-form gammatone filters, NSIM
-  variances about each cell, alignment lags from the f32 correlation's
-  maximum): scores within ~5e-7 of the CPU's, ~4× faster than the CPU on
-  all cores.
+- `--precision fast` (default without f64) runs them in f32 (delta-form
+  gammatone filters, NSIM variances about each cell, alignment lags from
+  the f32 correlation's maximum): scores within ~5e-7 of the CPU's, ~4×
+  faster than the CPU on all cores.
 - `--precision balanced` is fast, but with the stages f32 loses most in
   done in two-float arithmetic (hi + lo f32 pairs,
   [`src/gpu/df.slang`](src/gpu/df.slang)): the gammatone filterbank, dB
   conversion and NSIM band statistics. Scores within ~1e-7 of the CPU's,
-  ~2.4× faster than the CPU on all cores.
+  ~2.4× faster than the CPU on all cores (on an M1, about the CPU's
+  speed).
 
 Real-time factor (wall time / audio time; lower is faster) over 130
 reference pairs, 1550 s of audio, on a Ryzen 9 3900X and an RTX 3080,
@@ -205,10 +206,7 @@ with batch workers on all cores or one:
 | balanced | | 9.81e-4 | 1.19e-3 | | 1.63e-3 | 1.76e-3 |
 | fast | | 5.71e-4 | 6.89e-4 | | 1.02e-3 | 1.11e-3 |
 
-Without f64 (Metal), exact keeps the CPU model, with the GPU computing its
-spectrograms, DP similarities and lag searches in f32 (the `Accelerator`
-interface, [`src/accel.zig`](src/accel.zig)) and rescoring lags in f64;
-scores drift <1e-6.
+Without f64 (Metal), exact runs the CPU model.
 
 Batches spread over several GPU lanes (zimt devices: streams on CUDA,
 queues on Vulkan and Metal) so worker threads overlap their transfers and

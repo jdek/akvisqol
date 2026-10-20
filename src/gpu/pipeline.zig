@@ -24,7 +24,7 @@ const GpuAccel = engine.GpuAccel;
 const Lane = GpuAccel.Lane;
 
 /// Whether `ga` scores on the device: unless exact without f64 (Metal),
-/// which keeps the CPU's f64 stages (`GpuAccel` as an `Accelerator`).
+/// which runs the CPU model.
 pub fn applies(ga: *const GpuAccel) bool {
     return ga.precision != .exact or ga.float64;
 }
@@ -1509,9 +1509,12 @@ test "device pipeline: f64 reproduces the CPU bit for bit, f32 closely" {
             else => return e,
         };
         defer ga.destroy();
-        // Without f64, exact keeps the CPU's f64 stages instead.
+        // Without f64, exact runs the CPU model instead.
         if (!applies(ga)) continue;
-        for (cases) |c| {
+        // Every lag past `lag_cap`: the CPU's search.
+        for ([_]u32{ ga.lag_cap, 0 }) |cap| for (cases) |c| {
+            if (cap == 0 and precision != .exact) continue;
+            ga.lag_cap = cap;
             var ref = audio.loadAsMono(allocator, c.ref) catch return error.SkipZigTest;
             defer ref.deinit();
             var deg = audio.loadAsMono(allocator, c.deg) catch return error.SkipZigTest;
@@ -1526,7 +1529,7 @@ test "device pipeline: f64 reproduces the CPU bit for bit, f32 closely" {
             var g = try got[0];
             defer g.deinit();
             try expectResult(precision == .exact, want, g);
-        }
+        };
         std.debug.print("device pipeline: {t} {t} on {s}\n", .{ precision, b, ga.lanes[0].?.device.name() });
         ran = true;
     };

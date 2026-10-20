@@ -37,9 +37,10 @@ enum {
     VISQOL_BACKEND_VULKAN = 3,
 };
 
-/* GPU arithmetic: f64, the CPU's scores bit for bit; f32; or f32 with
- * two-float where f32 loses most. */
-enum { VISQOL_PRECISION_EXACT = 0, VISQOL_PRECISION_FAST = 1, VISQOL_PRECISION_BALANCED = 2 };
+/* GPU arithmetic: f64, the CPU's scores bit for bit (on the CPU without
+ * f64); f32; f32 with two-float where f32 loses most; or (the default)
+ * exact with f64, else fast. */
+enum { VISQOL_PRECISION_EXACT = 0, VISQOL_PRECISION_FAST = 1, VISQOL_PRECISION_BALANCED = 2, VISQOL_PRECISION_AUTO = 3 };
 
 typedef struct {
     uint32_t mode;                       /* VISQOL_MODE_* */

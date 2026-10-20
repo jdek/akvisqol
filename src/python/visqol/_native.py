@@ -167,10 +167,10 @@ class Context:
 
     def __init__(self, *, mode: int, search_window_radius: int, use_unscaled_speech_mos_mapping: bool,
                  disable_global_alignment: bool, disable_realignment: bool,
-                 use_lattice_model: bool, model_path: str | None, backend: str, precision: str = "exact"):
+                 use_lattice_model: bool, model_path: str | None, backend: str, precision: str | None = None):
         if backend not in BACKENDS:
             raise ValueError(f"unknown backend {backend!r}; expected one of {sorted(BACKENDS)}")
-        if precision not in PRECISIONS:
+        if precision is not None and precision not in PRECISIONS:
             raise ValueError(f"unknown precision {precision!r}; expected one of {sorted(PRECISIONS)}")
         opts = Options()
         lib.visqol_options_default(ctypes.byref(opts))
@@ -182,7 +182,8 @@ class Context:
         opts.use_lattice_model = int(bool(use_lattice_model))
         opts.model_path = os.fsencode(model_path) if model_path else None
         opts.backend = BACKENDS[backend]
-        opts.precision = PRECISIONS[precision]
+        if precision is not None:
+            opts.precision = PRECISIONS[precision]
         handle = c_void_p()
         rc = lib.visqol_create(ctypes.byref(opts), ctypes.byref(handle))
         if rc != OK:

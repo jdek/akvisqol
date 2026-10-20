@@ -160,7 +160,7 @@ pub const CpuEngine = struct {
 
     /// Copies only: the CPU model computes per pair.
     pub fn prepare(self: *CpuEngine, refs: []const []const f64, sample_rate: u32) !visqol.Prepared {
-        return visqol.Prepared.init(self.allocator, refs, sample_rate, self.options.precision, self.options.mode);
+        return visqol.Prepared.init(self.allocator, refs, sample_rate, self.options.precision orelse .exact, self.options.mode);
     }
 
     pub fn measurePrepared(self: *CpuEngine, prepared: *const visqol.Prepared, degs: []const []const f64, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {

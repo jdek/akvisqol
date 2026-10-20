@@ -107,27 +107,6 @@ public struct SimTask
     public uint first;
 }
 
-// The hybrid path's NSIM tasks: ref patch at `ref_frame` of a spectrogram
-// at `ref_off` with `ref_frames` frames.
-public struct RefPatch
-{
-    public uint ref_off;
-    public uint ref_frames;
-    public uint ref_frame;
-}
-
-// `count` offsets from `lo` of a ref patch against a deg spectrogram, their
-// results from `task`.
-public struct SimRow
-{
-    public uint task;
-    public uint count;
-    public uint lo;
-    public RefPatch ref;
-    public uint deg_off;
-    public uint deg_frames;
-}
-
 // The DP of one pair: `patches` searches from `first`, deg spectrogram of
 // `deg_frames`, DP and backtrace rows `deg_frames` wide from `table`.
 public struct DpPair

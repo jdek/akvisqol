@@ -34,8 +34,8 @@ def main() -> None:
     parser.add_argument("--no_alignment", action="store_true", help="Disable global alignment")
     parser.add_argument("--no_realignment", action="store_true", help="Disable fine realignment")
     parser.add_argument("--backend", default=None, help="Compute backend: cpu, metal, cuda, vulkan (extension)")
-    parser.add_argument("--precision", default="exact", choices=["exact", "balanced", "fast"],
-                        help="GPU arithmetic: exact (f64, the CPU's scores bit for bit), balanced (f32, two-float where f32 loses most) or fast (f32) (extension)")
+    parser.add_argument("--precision", default=None, choices=["exact", "balanced", "fast"],
+                        help="GPU arithmetic: exact (f64, the CPU's scores bit for bit; on the CPU without f64), balanced (f32, two-float where f32 loses most) or fast (f32); default exact with f64, else fast (extension)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 

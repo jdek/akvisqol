@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 J. Dekker <jdek@itanimul.li>
 // SPDX-License-Identifier: Apache-2.0
 
-//! Batched compute-offload interface for the model's hot spots
-//! (spectrograms, DP patch similarities, alignment lags, patch realignment).
-//! `Cpu` is the reference implementation; GPU ones live in `src/gpu/`.
+//! The CPU model's batched stages: spectrograms, DP patch similarities,
+//! alignment lags, patch realignment.
 const std = @import("std");
 const gammatone = @import("gammatone.zig");
 const nsim = @import("nsim.zig");
@@ -83,38 +82,6 @@ pub const RealignOut = struct {
     deg_spec: []f64,
 };
 
-pub const Accelerator = struct {
-    ctx: *anyopaque,
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        spectrograms: *const fn (ctx: *anyopaque, params: SpecParams, jobs: []const SpecJob) anyerror!void,
-        patchSimilarities: *const fn (ctx: *anyopaque, jobs: []const SimJob) anyerror!void,
-        bestLags: *const fn (ctx: *anyopaque, jobs: []const LagJob) anyerror!void,
-        realign: *const fn (ctx: *anyopaque, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) anyerror!void,
-    };
-
-    pub fn spectrograms(self: Accelerator, params: SpecParams, jobs: []const SpecJob) !void {
-        if (jobs.len == 0) return;
-        return self.vtable.spectrograms(self.ctx, params, jobs);
-    }
-
-    pub fn patchSimilarities(self: Accelerator, jobs: []const SimJob) !void {
-        if (jobs.len == 0) return;
-        return self.vtable.patchSimilarities(self.ctx, jobs);
-    }
-
-    pub fn bestLags(self: Accelerator, jobs: []const LagJob) !void {
-        if (jobs.len == 0) return;
-        return self.vtable.bestLags(self.ctx, jobs);
-    }
-
-    pub fn realign(self: Accelerator, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) !void {
-        if (jobs.len == 0) return;
-        return self.vtable.realign(self.ctx, params, sample_rate, jobs);
-    }
-};
-
 /// Single-threaded; batch parallelism is one pipeline per worker thread.
 pub const Cpu = struct {
     allocator: std.mem.Allocator,
@@ -125,24 +92,12 @@ pub const Cpu = struct {
         self.xcorr_cache = null;
     }
 
-    pub fn accelerator(self: *Cpu) Accelerator {
-        return .{ .ctx = self, .vtable = &vtable };
-    }
-
-    const vtable: Accelerator.VTable = .{
-        .spectrograms = spectrogramsImpl,
-        .patchSimilarities = patchSimilaritiesImpl,
-        .bestLags = bestLagsImpl,
-        .realign = realignImpl,
-    };
-
     fn cache(self: *Cpu) *xcorr.Cache {
         if (self.xcorr_cache == null) self.xcorr_cache = xcorr.Cache.init(self.allocator);
         return &self.xcorr_cache.?;
     }
 
-    fn bestLagsImpl(ctx: *anyopaque, jobs: []const LagJob) anyerror!void {
-        const self: *Cpu = @ptrCast(@alignCast(ctx));
+    pub fn bestLags(self: *Cpu, jobs: []const LagJob) !void {
         for (jobs) |j| {
             const env = try realign.alignmentEnvelopes(self.allocator, j.a, j.b);
             defer self.allocator.free(env.ref);
@@ -151,15 +106,15 @@ pub const Cpu = struct {
         }
     }
 
-    fn realignImpl(ctx: *anyopaque, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) anyerror!void {
-        const self: *Cpu = @ptrCast(@alignCast(ctx));
+    pub fn realignPatches(self: *Cpu, params: SpecParams, sample_rate: u32, jobs: []const RealignJob) !void {
+        if (jobs.len == 0) return;
         const frame_buf = try gammatone.allocFrameBuf(self.allocator, params.window_size);
         defer self.allocator.free(frame_buf);
         for (jobs) |j| try realign.realignCpu(self.allocator, self.cache(), params, sample_rate, j, frame_buf);
     }
 
-    fn spectrogramsImpl(ctx: *anyopaque, params: SpecParams, jobs: []const SpecJob) anyerror!void {
-        const self: *Cpu = @ptrCast(@alignCast(ctx));
+    pub fn spectrograms(self: *Cpu, params: SpecParams, jobs: []const SpecJob) !void {
+        if (jobs.len == 0) return;
         const frame_buf = try gammatone.allocFrameBuf(self.allocator, params.window_size);
         defer self.allocator.free(frame_buf);
         for (jobs) |j| {
@@ -168,8 +123,7 @@ pub const Cpu = struct {
         }
     }
 
-    fn patchSimilaritiesImpl(ctx: *anyopaque, jobs: []const SimJob) anyerror!void {
-        const self: *Cpu = @ptrCast(@alignCast(ctx));
+    pub fn patchSimilarities(self: *Cpu, jobs: []const SimJob) !void {
         const cmp = nsim.Comparator.init(1.0);
         for (jobs) |j| {
             var scratch = try nsim.Scratch.init(self.allocator, j.num_bands, j.patch_size);

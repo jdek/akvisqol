@@ -3,9 +3,7 @@
 
 //! GPU scoring on zimt (Metal, CUDA or Vulkan): the whole model on the
 //! device (pipeline.zig) where it applies, else (exact without f64: Metal)
-//! the CPU model with `GpuAccel` as its `Accelerator`, f32 hot spots on the
-//! device, delicate stages and lag rescoring in f64 on the CPU (MOS drift
-//! <1e-6). Lanes, kernels and the lag search are shared by both.
+//! the CPU model.
 const std = @import("std");
 const zimt = @import("zimt");
 const kernels = @import("visqol_kernels");
@@ -36,7 +34,7 @@ pub fn threadsOf(k: anytype) usize {
     return @TypeOf(k).Def.threads[0];
 }
 
-/// Upper bound on pairs scored in lock-step per accelerator round trip.
+/// Pairs scored in lock-step per chunk, at most.
 const MAX_CHUNK = 16;
 
 pub const Engine = struct {
@@ -50,12 +48,14 @@ pub const Engine = struct {
         const b = toGpu(kind) orelse return error.BackendUnavailable;
         const ga = try GpuAccel.create(allocator, b, options.precision);
         errdefer ga.destroy();
+        var opts = options;
+        opts.precision = ga.precision;
         return .{
             .allocator = allocator,
-            .options = options,
+            .options = opts,
             .model_text = model_text,
             .gpu_accel = ga,
-            .main = try visqol.Visqol.init(allocator, options, try backend.makeMapper(allocator, options, model_text)),
+            .main = try visqol.Visqol.init(allocator, opts, try backend.makeMapper(allocator, opts, model_text)),
         };
     }
 
@@ -71,11 +71,11 @@ pub const Engine = struct {
     }
 
     /// On the device where it can (`pipeline.applies`), else the CPU model
-    /// with the GPU as its `Accelerator` (no gradients there).
+    /// (no gradients there).
     fn score(self: *Engine, v: *visqol.Visqol, pairs: []const visqol.Pair, sample_rate: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64, refs: ?[]const visqol.PreparedRef) !void {
         if (pipeline.applies(self.gpu_accel)) return pipeline.measureBatch(self.gpu_accel, v, pairs, sample_rate, results, grads, refs);
         if (grads != null) return error.Unsupported;
-        return v.measureBatch(pairs, sample_rate, self.gpu_accel.accelerator(), results);
+        return v.measureBatch(pairs, sample_rate, results);
     }
 
     const Shared = struct {
@@ -123,7 +123,7 @@ pub const Engine = struct {
     }
 
     /// Lock-step chunks, up to `num_threads` concurrently, so CPU stages
-    /// use every core while the accelerator batches kernels per chunk.
+    /// use every core while the device batches kernels per chunk.
     pub fn measureBatch(self: *Engine, pairs: []const visqol.Pair, sample_rate: u32, num_threads: u32, results: []anyerror!visqol.Result) !void {
         return self.batch(pairs, sample_rate, num_threads, results, null, null);
     }
@@ -131,7 +131,7 @@ pub const Engine = struct {
     /// `refs` for `measurePrepared`; where the model runs on the device,
     /// each one's patches, energy and spectrogram are computed once.
     pub fn prepare(self: *Engine, refs: []const []const f64, sample_rate: u32) !visqol.Prepared {
-        var prepared = try visqol.Prepared.init(self.allocator, refs, sample_rate, self.options.precision, self.options.mode);
+        var prepared = try visqol.Prepared.init(self.allocator, refs, sample_rate, self.options.precision.?, self.options.mode);
         errdefer prepared.deinit();
         if (pipeline.applies(self.gpu_accel)) try pipeline.prepare(self.gpu_accel, &self.main, &prepared);
         return prepared;
@@ -141,7 +141,7 @@ pub const Engine = struct {
     /// `grads`, `measureBatchGrad`) would score them.
     pub fn measurePrepared(self: *Engine, prepared: *const visqol.Prepared, degs: []const []const f64, num_threads: u32, results: []anyerror!visqol.Result, grads: ?[]const []f64) !void {
         std.debug.assert(degs.len == prepared.refs.len);
-        if (prepared.precision != self.options.precision or prepared.mode != self.options.mode) return error.InvalidInput;
+        if (prepared.precision != self.options.precision.? or prepared.mode != self.options.mode) return error.InvalidInput;
         if (grads != null and !pipeline.applies(self.gpu_accel)) return error.Unsupported;
         const pairs = try self.allocator.alloc(visqol.Pair, degs.len);
         defer self.allocator.free(pairs);
@@ -191,7 +191,7 @@ fn defaultLanes(b: zimt.Backend) usize {
     return if (b == .cuda) 4 else 2;
 }
 
-/// `accel.Accelerator` over zimt devices (lanes), opened as concurrent
+/// zimt devices (lanes), opened as concurrent
 /// callers need them, so batch threads don't queue on one.
 pub const GpuAccel = struct {
     allocator: std.mem.Allocator,
@@ -211,10 +211,8 @@ pub const GpuAccel = struct {
     const Complex = zimt.Buffer([2]f32);
     const Twiddles = struct { n: usize, buf: Complex };
 
-    /// f32 builds, and the hybrid path's kernels.
+    /// f32 builds, and the lag search.
     pub const Kernels = struct {
-        ref_stats: zimt.Kernel(kernels.ref_stats),
-        patch_sims: zimt.Kernel(kernels.patch_sims),
         fft_radix2: zimt.Kernel(kernels.fft_radix2),
         fft_radix4: zimt.Kernel(kernels.fft_radix4),
         fft_radix16: zimt.Kernel(kernels.fft_radix16),
@@ -334,11 +332,12 @@ pub const GpuAccel = struct {
 
         /// With the f64 kernels for exact precision where the device has
         /// f64, the two-float ones for balanced.
-        fn create(allocator: std.mem.Allocator, b: zimt.Backend, precision: visqol.Precision) !*Lane {
+        fn create(allocator: std.mem.Allocator, b: zimt.Backend, requested: ?visqol.Precision) !*Lane {
             const self = try allocator.create(Lane);
             errdefer allocator.destroy(self);
             const dev = try zimt.Device.open(allocator, b);
             errdefer dev.close();
+            const precision = resolve(requested, dev);
             const ks = try loadKernels(Kernels, dev);
             errdefer releaseKernels(ks, dev);
             const k64 = if (precision == .exact and dev.float64) try loadKernels(Kernels64, dev) else null;
@@ -541,17 +540,21 @@ pub const GpuAccel = struct {
         }
     };
 
-    pub fn create(allocator: std.mem.Allocator, b: zimt.Backend, precision: visqol.Precision) !*GpuAccel {
+    fn resolve(precision: ?visqol.Precision, dev: *const zimt.Device) visqol.Precision {
+        return precision orelse if (dev.float64) .exact else .fast;
+    }
+
+    pub fn create(allocator: std.mem.Allocator, b: zimt.Backend, precision: ?visqol.Precision) !*GpuAccel {
         const self = try allocator.create(GpuAccel);
         errdefer allocator.destroy(self);
         var max_lanes: usize = defaultLanes(b);
         if (std.c.getenv("VISQOL_GPU_LANES")) |v| {
             max_lanes = std.math.clamp(std.fmt.parseInt(usize, std.mem.span(v), 10) catch max_lanes, 1, MAX_LANES);
         }
-        self.* = .{ .allocator = allocator, .backend = b, .max_lanes = max_lanes, .precision = precision };
         // So an unusable backend fails here.
-        self.lanes[0] = try Lane.create(allocator, b, precision);
-        self.float64 = self.lanes[0].?.k64 != null;
+        const lane = try Lane.create(allocator, b, precision);
+        self.* = .{ .allocator = allocator, .backend = b, .max_lanes = max_lanes, .precision = resolve(precision, lane.device), .float64 = lane.k64 != null };
+        self.lanes[0] = lane;
         self.lane_count.store(1, .release);
         return self;
     }
@@ -587,200 +590,6 @@ pub const GpuAccel = struct {
         return l;
     }
 
-    pub fn accelerator(self: *GpuAccel) accel.Accelerator {
-        return .{ .ctx = self, .vtable = &vtable };
-    }
-
-    const vtable: accel.Accelerator.VTable = .{
-        .spectrograms = spectrogramsImpl,
-        .patchSimilarities = patchSimilaritiesImpl,
-        .bestLags = bestLagsImpl,
-        .realign = realignImpl,
-    };
-
-    fn spectrogramsImpl(ctx: *anyopaque, params: accel.SpecParams, jobs: []const accel.SpecJob) anyerror!void {
-        const self: *GpuAccel = @ptrCast(@alignCast(ctx));
-        const a = self.allocator;
-        const nb = params.bands.len;
-
-        var total_samples: usize = 0;
-        var total_frames: usize = 0;
-        var total_out: usize = 0;
-        for (jobs) |j| {
-            total_samples += j.signal.len;
-            total_frames += j.num_frames;
-            total_out += nb * j.num_frames;
-        }
-        if (total_frames == 0) return;
-        if (total_samples > std.math.maxInt(u32) or total_out > std.math.maxInt(u32)) return error.BatchTooLarge;
-
-        const signals = try a.alloc(f32, total_samples);
-        defer a.free(signals);
-        const frames = try a.alloc(kernels.Frame, total_frames);
-        defer a.free(frames);
-        {
-            var s_off: usize = 0;
-            var f_off: usize = 0;
-            var o_off: usize = 0;
-            for (jobs) |j| {
-                for (j.signal, signals[s_off..][0..j.signal.len]) |x, *y| y.* = @floatCast(x);
-                for (frames[f_off..][0..j.num_frames], 0..) |*fr, f| {
-                    fr.* = .{ .start = @intCast(s_off + f * params.hop_size), .out = @intCast(o_off + f), .stride = @intCast(j.num_frames) };
-                }
-                s_off += j.signal.len;
-                f_off += j.num_frames;
-                o_off += nb * j.num_frames;
-            }
-        }
-        var tables = try FilterTables(.fast).init(a, params);
-        defer tables.deinit(a);
-        const out = try a.alloc(f32, total_out);
-        defer a.free(out);
-
-        {
-            const lane = self.acquire();
-            defer lane.release();
-            const dev = lane.device;
-            var scope = dev.arena();
-            defer scope.deinit();
-            const d_signals = try scope.allocInit(f32, signals);
-            const d_frames = try scope.allocInit(kernels.Frame, frames);
-            const t = try tables.upload(&scope);
-            const d_out = try scope.alloc(f32, .readback, total_out);
-            try dev.dispatch1d(lane.k.gammatone_frames_f32, total_frames * nb, .{
-                .signals = d_signals,
-                .frames = d_frames,
-                .coeffs = t.coeffs,
-                .hann = t.hann,
-                .out = d_out,
-                .num_frames = @intCast(total_frames),
-                .num_bands = @intCast(nb),
-                .window_size = @intCast(params.window_size),
-            });
-            try dev.download(d_out, 0, out);
-        }
-
-        var o_off: usize = 0;
-        for (jobs) |j| {
-            const n = nb * j.num_frames;
-            for (out[o_off..][0..n], j.out[0..n]) |x, *y| y.* = x;
-            o_off += n;
-        }
-    }
-
-    fn patchSimilaritiesImpl(ctx: *anyopaque, jobs: []const accel.SimJob) anyerror!void {
-        const self: *GpuAccel = @ptrCast(@alignCast(ctx));
-        const a = self.allocator;
-        const nb = jobs[0].num_bands;
-        const ps = jobs[0].patch_size;
-        for (jobs) |j| {
-            if (j.num_bands != nb or j.patch_size != ps) return error.MixedPatchGeometry;
-        }
-
-        var ref_len: usize = 0;
-        var deg_len: usize = 0;
-        var num_rows: usize = 0;
-        var num_tasks: usize = 0;
-        for (jobs) |j| {
-            ref_len += nb * j.nf_ref;
-            deg_len += nb * j.nf_deg;
-            num_rows += j.ref_indices.len;
-            for (j.lo, j.hi) |lo, hi| num_tasks += hi - lo + 1;
-        }
-        if (num_rows == 0) return;
-        if (ref_len > std.math.maxInt(u32) or deg_len > std.math.maxInt(u32) or num_tasks > std.math.maxInt(u32))
-            return error.BatchTooLarge;
-
-        const ref_f = try a.alloc(f32, ref_len);
-        defer a.free(ref_f);
-        const deg_f = try a.alloc(f32, deg_len);
-        defer a.free(deg_f);
-        const rows = try a.alloc(kernels.SimRow, num_rows);
-        defer a.free(rows);
-        const stat_rows = try a.alloc(kernels.RefPatch, num_rows);
-        defer a.free(stat_rows);
-        {
-            var r_off: usize = 0;
-            var d_off: usize = 0;
-            var row: usize = 0;
-            var task: usize = 0;
-            for (jobs) |j| {
-                for (j.ref_spec[0 .. nb * j.nf_ref], ref_f[r_off..][0 .. nb * j.nf_ref]) |x, *y| y.* = @floatCast(x);
-                for (j.deg_spec[0 .. nb * j.nf_deg], deg_f[d_off..][0 .. nb * j.nf_deg]) |x, *y| y.* = @floatCast(x);
-                for (j.ref_indices, j.lo, j.hi) |ri, lo, hi| {
-                    stat_rows[row] = .{ .ref_off = @intCast(r_off), .ref_frames = @intCast(j.nf_ref), .ref_frame = @intCast(ri) };
-                    rows[row] = .{
-                        .task = @intCast(task),
-                        .count = @intCast(hi - lo + 1),
-                        .lo = @intCast(lo),
-                        .ref = stat_rows[row],
-                        .deg_off = @intCast(d_off),
-                        .deg_frames = @intCast(j.nf_deg),
-                    };
-                    task += hi - lo + 1;
-                    row += 1;
-                }
-                r_off += nb * j.nf_ref;
-                d_off += nb * j.nf_deg;
-            }
-        }
-        // One per task: row r's window from rows[r].task.
-        const out = try a.alloc(f32, num_tasks);
-        defer a.free(out);
-
-        {
-            const lane = self.acquire();
-            defer lane.release();
-            const dev = lane.device;
-            var scope = dev.arena();
-            defer scope.deinit();
-            const d_ref = try scope.allocInit(f32, ref_f);
-            const d_deg = try scope.allocInit(f32, deg_f);
-            const d_rows = try scope.allocInit(kernels.SimRow, rows);
-            const d_stat_rows = try scope.allocInit(kernels.RefPatch, stat_rows);
-            const cells = nb * ps;
-            const d_mu = try scope.alloc(f32, .device, num_rows * cells);
-            const d_srs = try scope.alloc(f32, .device, num_rows * cells);
-            const d_out = try scope.alloc(f32, .readback, num_tasks);
-            const u = struct {
-                fn c(x: usize) u32 {
-                    return @intCast(x);
-                }
-            }.c;
-            try dev.dispatch1d(lane.k.ref_stats, num_rows * cells, .{
-                .spec = d_ref,
-                .rows = d_stat_rows,
-                .mu = d_mu,
-                .srs = d_srs,
-                .num_rows = u(num_rows),
-                .num_bands = u(nb),
-                .patch_size = u(ps),
-            });
-            try dev.dispatch1d(lane.k.patch_sims, num_tasks, .{
-                .ref_spec = d_ref,
-                .deg_spec = d_deg,
-                .rows = d_rows,
-                .mu_ref = d_mu,
-                .srs_ref = d_srs,
-                .out = d_out,
-                .num_rows = u(num_rows),
-                .num_tasks = u(num_tasks),
-                .num_bands = u(nb),
-                .patch_size = u(ps),
-            });
-            try dev.download(d_out, 0, out);
-        }
-
-        var task: usize = 0;
-        for (jobs) |j| {
-            for (j.lo, j.hi, 0..) |lo, hi, p| {
-                const n = hi - lo + 1;
-                for (j.out[p * j.nf_deg + lo ..][0..n], out[task..][0..n]) |*y, x| y.* = x;
-                task += n;
-            }
-        }
-    }
-
     fn lagFftSize(j: accel.LagJob) usize {
         return fftSize(j.a.len, j.b.len);
     }
@@ -809,154 +618,6 @@ pub const GpuAccel = struct {
     /// Terms of a rescored dot product per thread group.
     const RESCORE_CHUNK = 4096;
 
-    /// One lag search: envelopes of sides `a` and `b`, of FFT size `n`.
-    const Row = struct {
-        a: accel.View,
-        b: accel.View,
-        n: usize,
-        job: usize,
-
-        fn init(a: accel.View, b: accel.View, job: usize) Row {
-            return .{ .a = a, .b = b, .n = fftSize(a.len(), b.len()), .job = job };
-        }
-
-        fn whole(signal: []const f64) accel.View {
-            return .{ .signal = signal, .layout = .{ .pad = 0, .base = 0, .len = signal.len } };
-        }
-
-        fn lessThan(_: void, x: Row, y: Row) bool {
-            return x.n < y.n;
-        }
-    };
-
-    /// Whether lags are searched on the device: unless exact without f64.
-    pub fn deviceLags(self: *const GpuAccel) bool {
-        return self.precision != .exact or self.float64;
-    }
-
-    /// The lags of `rows` (sorted by FFT size), in groups of one size, each
-    /// group's signals uploaded once; with `Patches`, also the rows' trimmed
-    /// spectrograms.
-    fn Batch(comptime T: type) type {
-        return struct {
-            const Self = @This();
-
-            gpu: *GpuAccel,
-            rows: []const Row,
-            groups: std.ArrayList(Group) = .empty,
-            /// Each row's views, starting in its group's signals.
-            views: []kernels.LagRow,
-
-            const Group = struct { first: usize, end: usize, signals: Signals(T) = .{}, len: usize = 0 };
-
-            fn init(gpu: *GpuAccel, rows: []const Row) !Self {
-                const a = gpu.allocator;
-                var self: Self = .{ .gpu = gpu, .rows = rows, .views = try a.alloc(kernels.LagRow, rows.len) };
-                errdefer self.deinit();
-                @memset(self.views, std.mem.zeroes(kernels.LagRow));
-                var g: usize = 0;
-                while (g < rows.len) {
-                    var e = g + 1;
-                    while (e < rows.len and rows[e].n == rows[g].n and (e - g + 1) * rows[g].n <= FFT_BATCH_POINTS) e += 1;
-                    try self.groups.append(a, .{ .first = g, .end = e });
-                    const grp = &self.groups.items[self.groups.items.len - 1];
-                    for (rows[g..e]) |r| {
-                        try grp.signals.add(a, r.a);
-                        try grp.signals.add(a, r.b);
-                    }
-                    grp.len = try grp.signals.place();
-                    for (rows[g..e], self.views[g..e]) |r, *v| {
-                        v.a = .{ .start = grp.signals.start(r.a), .pad = @intCast(r.a.layout.pad), .len = @intCast(r.a.layout.len) };
-                        v.b = .{ .start = grp.signals.start(r.b), .pad = @intCast(r.b.layout.pad), .len = @intCast(r.b.layout.len) };
-                    }
-                    g = e;
-                }
-                return self;
-            }
-
-            fn deinit(self: *Self) void {
-                const a = self.gpu.allocator;
-                for (self.groups.items) |*g| g.signals.deinit(a);
-                self.groups.deinit(a);
-                a.free(self.views);
-            }
-
-            const Patches = struct {
-                params: accel.SpecParams,
-                sample_rate: u32,
-                /// The row of each frame slot.
-                slots: []const u32,
-                out: zimt.Buffer(f32),
-            };
-
-            /// Rows with `search` false have their lags in `lags` already.
-            fn run(self: *Self, lane: *Lane, scope: *zimt.Arena, search: []const bool, lags: zimt.Buffer(i32), status: zimt.Buffer(u32), patches: ?Patches) !void {
-                const a = self.gpu.allocator;
-                const dev = lane.device;
-                const views = try scope.allocInit(kernels.LagRow, self.views);
-                const exact = self.gpu.precision == .exact;
-                const max_lags = try a.alloc(u32, self.rows.len);
-                defer a.free(max_lags);
-                for (self.rows, max_lags) |r, *m| m.* = @intCast(@max(r.a.len(), r.b.len(), 1) - 1);
-                var spec: ?struct { tables: FilterTables(.fast).Device, slots: zimt.Buffer(u32), back: zimt.Buffer(u32), raw: zimt.Buffer(f32) } = null;
-                if (patches) |p| {
-                    var tables = try FilterTables(.fast).init(a, p.params);
-                    defer tables.deinit(a);
-                    const back = try backTable(a, self.rows, p.sample_rate);
-                    defer a.free(back);
-                    // The host copies grid-aligned frames here.
-                    spec = .{ .tables = try tables.upload(scope), .slots = try scope.allocInit(u32, p.slots), .back = try scope.allocInit(u32, back), .raw = try scope.alloc(f32, .device, 1) };
-                }
-                var slot: usize = 0;
-                for (self.groups.items) |*g| {
-                    var gs = dev.arena();
-                    defer gs.deinit();
-                    const signals = try g.signals.upload(a, &gs, g.len);
-                    if (search[g.first]) {
-                        try lane.searchGroup(T, &gs, signals, views, g.first, .{ .host = max_lags[g.first..g.end] }, self.rows[g.first].n, lags, status, exact, self.gpu.lag_cap);
-                    }
-                    const p = patches orelse continue;
-                    const sp = spec.?;
-                    var slots: usize = 0;
-                    for (self.views[g.first..g.end]) |v| slots += v.slots;
-                    const nb = p.params.bands.len;
-                    if (slots == 0) continue;
-                    const signals32 = if (T == f64) blk: {
-                        const s32 = try gs.alloc(f32, .device, @max(g.len, 1));
-                        try dev.dispatch1d(lane.k64.?.to_f32, g.len, .{ .x = signals, .y = s32, .n = @intCast(g.len) });
-                        break :blk s32;
-                    } else signals;
-                    try dev.dispatch1d(lane.k.gammatone_patches_f32, slots * 2 * nb, .{
-                        .signals = signals32,
-                        .rows = views,
-                        .slots = sp.slots,
-                        .lags = lags,
-                        .status = status,
-                        .back = sp.back,
-                        .coeffs = sp.tables.coeffs,
-                        .hann = sp.tables.hann,
-                        .raw = sp.raw,
-                        .out = p.out,
-                        .copy_raw = 0,
-                        .first_slot = @intCast(slot),
-                        .total = @intCast(slots * 2 * nb),
-                        .num_bands = @intCast(nb),
-                        .window_size = @intCast(p.params.window_size),
-                        .hop_size = @intCast(p.params.hop_size),
-                    });
-                    slot += slots;
-                }
-            }
-
-            /// `lagBackTable` up to half the longest `a`.
-            fn backTable(a: std.mem.Allocator, rows: []const Row, sample_rate: u32) ![]u32 {
-                var half: usize = 0;
-                for (rows) |r| half = @max(half, r.a.len() / 2);
-                return lagBackTable(a, half, sample_rate);
-            }
-        };
-    }
-
     /// Bit k for lags k ≤ `half` that come back from seconds as k - 1
     /// (`realign.lagSamplesBack`): trim.slang's table.
     pub fn lagBackTable(a: std.mem.Allocator, half: usize, sample_rate: u32) ![]u32 {
@@ -967,68 +628,6 @@ pub const GpuAccel = struct {
             if (realign.lagSamplesBack(lag, sample_rate) != lag) words[k / 32] |= @as(u32, 1) << @intCast(k % 32);
         }
         return words;
-    }
-
-    /// The span of each distinct signal its views cover, uploaded as `T`.
-    fn Signals(comptime T: type) type {
-        return struct {
-            const Self = @This();
-
-            spans: std.ArrayList(Span) = .empty,
-
-            const Span = struct { signal: []const f64, lo: usize, hi: usize, at: usize = 0 };
-
-            fn deinit(self: *Self, a: std.mem.Allocator) void {
-                self.spans.deinit(a);
-            }
-
-            fn add(self: *Self, a: std.mem.Allocator, v: accel.View) !void {
-                if (v.layout.len == 0) return;
-                const lo = v.layout.base;
-                const hi = lo + v.layout.len;
-                for (self.spans.items) |*s| if (s.signal.ptr == v.signal.ptr) {
-                    if (v.signal.len > s.signal.len) s.signal = v.signal;
-                    s.lo = @min(s.lo, lo);
-                    s.hi = @max(s.hi, hi);
-                    return;
-                };
-                try self.spans.append(a, .{ .signal = v.signal, .lo = lo, .hi = hi });
-            }
-
-            /// Lays out the spans; their total length.
-            fn place(self: *Self) !usize {
-                var total: usize = 0;
-                for (self.spans.items) |*s| {
-                    s.at = total;
-                    total += s.hi - s.lo;
-                }
-                if (total > std.math.maxInt(u32)) return error.BatchTooLarge;
-                return total;
-            }
-
-            /// Where `v`'s first sample after the padding is.
-            fn start(self: *const Self, v: accel.View) u32 {
-                if (v.layout.len == 0) return 0;
-                for (self.spans.items) |s| if (s.signal.ptr == v.signal.ptr) return @intCast(s.at + v.layout.base - s.lo);
-                unreachable;
-            }
-
-            fn upload(self: *const Self, a: std.mem.Allocator, scope: *zimt.Arena, len: usize) !zimt.Buffer(T) {
-                const buf = try scope.alloc(T, .device, @max(len, 1));
-                for (self.spans.items) |s| {
-                    const src = s.signal[s.lo..s.hi];
-                    if (T == f64) {
-                        try scope.dev.upload(buf, s.at, src);
-                    } else {
-                        const tmp = try a.alloc(f32, src.len);
-                        defer a.free(tmp);
-                        for (src, tmp) |x, *y| y.* = @floatCast(x);
-                        try scope.dev.upload(buf, s.at, tmp);
-                    }
-                }
-                return buf;
-            }
-        };
     }
 
     /// The type the pipeline computes in at `precision`.
@@ -1090,50 +689,6 @@ pub const GpuAccel = struct {
         }
     }
 
-    /// `LagJob`s: on the device where it can (`deviceLags`), else envelopes
-    /// on the CPU and `envelopeLags`.
-    fn bestLagsImpl(ctx: *anyopaque, jobs: []const accel.LagJob) anyerror!void {
-        const self: *GpuAccel = @ptrCast(@alignCast(ctx));
-        const a = self.allocator;
-        var rows: std.ArrayList(Row) = .empty;
-        defer rows.deinit(a);
-        var host: std.ArrayList(accel.LagJob) = .empty;
-        defer host.deinit(a);
-        for (jobs, 0..) |j, i| {
-            const r = Row.init(Row.whole(j.a), Row.whole(j.b), i);
-            if (self.deviceLags() and r.n >= ENV_BLOCK) try rows.append(a, r) else try host.append(a, j);
-        }
-        try self.hostLags(host.items);
-        if (rows.items.len == 0) return;
-        std.mem.sort(Row, rows.items, {}, Row.lessThan);
-        const lags = try a.alloc(i32, rows.items.len);
-        defer a.free(lags);
-        const status = try a.alloc(u32, rows.items.len);
-        defer a.free(status);
-        if (self.float64) try self.searchRows(f64, rows.items, lags, status) else try self.searchRows(f32, rows.items, lags, status);
-        for (rows.items, lags, status) |r, l, st| {
-            const j = jobs[r.job];
-            j.out.* = if (st == 0) l else try hostLag(a, j.a, j.b);
-        }
-    }
-
-    fn searchRows(self: *GpuAccel, comptime T: type, rows: []const Row, lags: []i32, status: []u32) !void {
-        var batch = try Batch(T).init(self, rows);
-        defer batch.deinit();
-        const search = try self.allocator.alloc(bool, rows.len);
-        defer self.allocator.free(search);
-        @memset(search, true);
-        const lane = self.acquire();
-        defer lane.release();
-        var scope = lane.device.arena();
-        defer scope.deinit();
-        const d_lags = try scope.alloc(i32, .readback, rows.len);
-        const d_status = try scope.alloc(u32, .readback, rows.len);
-        try batch.run(lane, &scope, search, d_lags, d_status, null);
-        try lane.device.download(d_lags, 0, lags);
-        try lane.device.download(d_status, 0, status);
-    }
-
     /// `LagJob`s of signals, enveloped on the CPU.
     pub fn hostLags(self: *GpuAccel, jobs: []const accel.LagJob) !void {
         if (jobs.len == 0) return;
@@ -1161,147 +716,6 @@ pub const GpuAccel = struct {
         defer a.free(env.ref);
         defer a.free(env.deg);
         return xcorr.bestLag(a, env.ref, env.deg);
-    }
-
-    /// Patch realignment with the lags, trims and spectrograms on the
-    /// device; lags it doesn't search (`deviceLags`, n < `ENV_BLOCK`) and
-    /// rows past `lag_cap` go to the CPU.
-    fn realignImpl(ctx: *anyopaque, params: accel.SpecParams, sample_rate: u32, jobs: []const accel.RealignJob) anyerror!void {
-        const self: *GpuAccel = @ptrCast(@alignCast(ctx));
-        if (self.float64) return self.realignAs(f64, params, sample_rate, jobs);
-        return self.realignAs(f32, params, sample_rate, jobs);
-    }
-
-    fn realignAs(self: *GpuAccel, comptime T: type, params: accel.SpecParams, sample_rate: u32, jobs: []const accel.RealignJob) !void {
-        const a = self.allocator;
-        const nb = params.bands.len;
-        const rows = try a.alloc(Row, jobs.len);
-        defer a.free(rows);
-        for (jobs, rows, 0..) |j, *r, i| r.* = Row.init(j.ref, j.deg, i);
-        std.mem.sort(Row, rows, {}, Row.lessThan);
-
-        var batch = try Batch(T).init(self, rows);
-        defer batch.deinit();
-        const search = try a.alloc(bool, rows.len);
-        defer a.free(search);
-        const lags = try a.alloc(i32, rows.len);
-        defer a.free(lags);
-        const status = try a.alloc(u32, rows.len);
-        defer a.free(status);
-        @memset(lags, 0);
-        @memset(status, 0);
-        {
-            var host: std.ArrayList(accel.LagJob) = .empty;
-            defer host.deinit(a);
-            const host_lags = try a.alloc(i64, rows.len);
-            defer a.free(host_lags);
-            const slices = try a.alloc([2][]f64, rows.len);
-            defer a.free(slices);
-            var sliced: usize = 0;
-            defer for (slices[0..sliced]) |s| {
-                a.free(s[0]);
-                a.free(s[1]);
-            };
-            for (rows, search, 0..) |r, *s, i| {
-                s.* = self.deviceLags() and r.n >= ENV_BLOCK;
-                if (s.*) continue;
-                slices[sliced] = .{ try realign.sliceView(a, r.a), undefined };
-                slices[sliced][1] = realign.sliceView(a, r.b) catch |e| {
-                    a.free(slices[sliced][0]);
-                    return e;
-                };
-                sliced += 1;
-                try host.append(a, .{ .a = slices[sliced - 1][0], .b = slices[sliced - 1][1], .out = &host_lags[i] });
-            }
-            try self.hostLags(host.items);
-            for (search, lags, host_lags) |s, *l, h| if (!s) {
-                l.* = @intCast(h);
-            };
-        }
-
-        // Frame slots, in row order: room for the frames of the reference.
-        var num_slots: usize = 0;
-        for (rows, batch.views) |r, *v| {
-            const max_frames = gammatone.numFrames(r.a.len(), params.window_size, params.hop_size);
-            v.first_slot = @intCast(num_slots);
-            v.slots = @intCast(max_frames);
-            num_slots += max_frames;
-            if (jobs[r.job].raw) |raw| {
-                v.a_base = @intCast(r.a.layout.base);
-                v.b_base = @intCast(r.b.layout.base);
-                v.a_grid = @intCast(raw.nf_ref);
-                v.b_grid = @intCast(raw.nf_deg);
-            }
-        }
-        if (num_slots * 2 * nb > std.math.maxInt(u32)) return error.BatchTooLarge;
-        const slots = try a.alloc(u32, @max(num_slots, 1));
-        defer a.free(slots);
-        for (batch.views, 0..) |v, i| @memset(slots[v.first_slot..][0..v.slots], @intCast(i));
-        const out = try a.alloc(f32, @max(num_slots * 2 * nb, 1));
-        defer a.free(out);
-        {
-            const lane = self.acquire();
-            defer lane.release();
-            const dev = lane.device;
-            var scope = dev.arena();
-            defer scope.deinit();
-            const d_lags = try scope.allocInit(i32, lags);
-            const d_status = try scope.allocInit(u32, status);
-            const d_out = try scope.alloc(f32, .readback, out.len);
-            try batch.run(lane, &scope, search, d_lags, d_status, .{ .params = params, .sample_rate = sample_rate, .slots = slots, .out = d_out });
-            try dev.download(d_lags, 0, lags);
-            try dev.download(d_status, 0, status);
-            try dev.download(d_out, 0, out);
-        }
-
-        var redo: std.ArrayList(usize) = .empty;
-        defer redo.deinit(a);
-        for (rows, lags, status, 0..) |r, l, st, i| {
-            const j = jobs[r.job];
-            if (st != 0) {
-                try redo.append(a, r.job);
-                continue;
-            }
-            j.out.lag = l;
-            const geo = realign.trimGeometry(r.a.len(), r.b.len(), l, sample_rate);
-            const nf = gammatone.numFrames(geo.len, params.window_size, params.hop_size);
-            j.out.num_frames = nf;
-            const max_frames = batch.views[i].slots;
-            const base = batch.views[i].first_slot * 2 * nb;
-            const sides = [_]struct { view: accel.View, off: i64, dst: []f64, src: []const f32, raw: ?[]const f64, grid: usize }{
-                .{ .view = r.a, .off = @intCast(geo.ref_off), .dst = j.out.ref_spec, .src = out[base..], .raw = if (j.raw) |x| x.ref else null, .grid = if (j.raw) |x| x.nf_ref else 0 },
-                .{ .view = r.b, .off = geo.deg_off, .dst = j.out.deg_spec, .src = out[base + nb * max_frames ..], .raw = if (j.raw) |x| x.deg else null, .grid = if (j.raw) |x| x.nf_deg else 0 },
-            };
-            for (sides) |s| {
-                // The device skipped frames on the full signal's grid.
-                if (s.raw) |raw| if (realign.RawSpectrograms.reuse(nb, raw, s.grid, s.view.layout, s.off, params.hop_size, nf, s.dst)) continue;
-                for (s.src[0 .. nb * nf], s.dst[0 .. nb * nf]) |x, *y| y.* = x;
-            }
-        }
-        try self.realignOnHost(params, sample_rate, jobs, redo.items);
-    }
-
-    /// Rows with more near-ties than `lag_cap`: lag and trim on the CPU,
-    /// spectrograms on the device.
-    fn realignOnHost(self: *GpuAccel, params: accel.SpecParams, sample_rate: u32, jobs: []const accel.RealignJob, which: []const usize) !void {
-        const a = self.allocator;
-        for (which) |ji| {
-            const j = jobs[ji];
-            const ref_audio = try realign.sliceView(a, j.ref);
-            defer a.free(ref_audio);
-            const deg_audio = try realign.sliceView(a, j.deg);
-            defer a.free(deg_audio);
-            j.out.lag = try hostLag(a, ref_audio, deg_audio);
-            var trimmed = try realign.truncateAligned(a, ref_audio, deg_audio, j.out.lag, sample_rate);
-            defer trimmed.deinit();
-            const nf = gammatone.numFrames(trimmed.ref.len, params.window_size, params.hop_size);
-            j.out.num_frames = nf;
-            if (nf == 0) continue;
-            try spectrogramsImpl(self, params, &.{
-                .{ .signal = trimmed.ref, .num_frames = nf, .out = j.out.ref_spec },
-                .{ .signal = trimmed.deg, .num_frames = nf, .out = j.out.deg_spec },
-            });
-        }
     }
 
     /// `LagJob`s whose `a` and `b` are envelopes: f32 correlation and peak
@@ -1512,185 +926,9 @@ test "GPU lag search: f32 correlation within tolerance, lags exact" {
                 defer allocator.free(env.ref);
                 defer allocator.free(env.deg);
                 const want = try xcorr.bestLag(allocator, env.ref, env.deg);
-                const had64 = ga.float64;
-                defer restoreLagPath(ga, had64);
-                for (lag_paths) |p| if (setLagPath(ga, had64, p)) {
-                    out = 1 << 40;
-                    try ga.accelerator().bestLags(&jobs);
-                    try std.testing.expectEqual(want, out);
-                };
-            }
-        }
-    }.run);
-}
-
-/// Every way to a lag: exact and fast, with and without f64 kernels
-/// (without: Metal's), and exact with every row past `lag_cap` (the CPU's).
-const LagPath = struct { precision: visqol.Precision, float64: bool, cap: u32 = xcorr.MAX_REFINE_CANDIDATES };
-const lag_paths = [_]LagPath{
-    .{ .precision = .exact, .float64 = true },
-    .{ .precision = .exact, .float64 = true, .cap = 0 },
-    .{ .precision = .exact, .float64 = false },
-    .{ .precision = .fast, .float64 = true },
-    .{ .precision = .fast, .float64 = false },
-};
-
-/// False if the device has no f64 for `p`.
-fn setLagPath(ga: *GpuAccel, has64: bool, p: LagPath) bool {
-    if (p.float64 and !has64) return false;
-    ga.precision = p.precision;
-    ga.float64 = p.float64;
-    ga.lag_cap = p.cap;
-    return true;
-}
-
-fn restoreLagPath(ga: *GpuAccel, had64: bool) void {
-    _ = setLagPath(ga, had64, .{ .precision = .exact, .float64 = had64 });
-}
-
-test "GPU realignment matches the CPU" {
-    try eachGpu(struct {
-        fn run(ga: *GpuAccel) !void {
-            const allocator = std.testing.allocator;
-            const sr: u32 = 48000;
-            const NB = 32;
-            const f = gammatone.Filters(NB).init(sr, 50.0, 24000.0);
-            const ws: usize = 3840;
-            const hop = ws / 4;
-            const hann = try allocator.alloc(f64, ws);
-            defer allocator.free(hann);
-            gammatone.hannWindow(ws, hann);
-            const params: accel.SpecParams = .{ .bands = &f.bands, .window_size = ws, .hop_size = hop, .hann = hann };
-
-            var prng = std.Random.DefaultPrng.init(17);
-            const r = prng.random();
-            const ref = try allocator.alloc(f64, 60000);
-            defer allocator.free(ref);
-            var acc: f64 = 0;
-            for (ref, 0..) |*x, i| {
-                acc = 0.95 * acc + (r.float(f64) - 0.5);
-                x.* = 0.2 * acc + 0.05 * @sin(@as(f64, @floatFromInt(i)) * 0.01);
-            }
-            // The same with noise: the slices' lag is their offset.
-            const deg = try allocator.alloc(f64, ref.len);
-            defer allocator.free(deg);
-            for (deg, ref) |*y, x| y.* = x + 0.01 * (r.float(f64) - 0.5);
-
-            var cpu: accel.Cpu = .{ .allocator = allocator };
-            defer cpu.deinit();
-            const nf_ref = gammatone.numFrames(ref.len, ws, hop);
-            const raw_ref = try allocator.alloc(f64, NB * nf_ref);
-            defer allocator.free(raw_ref);
-            const raw_deg = try allocator.alloc(f64, NB * nf_ref);
-            defer allocator.free(raw_deg);
-            try cpu.accelerator().spectrograms(params, &.{
-                .{ .signal = ref, .num_frames = nf_ref, .out = raw_ref },
-                .{ .signal = deg, .num_frames = nf_ref, .out = raw_deg },
-            });
-            const raw: realign.RawSpectrograms = .{ .ref = raw_ref, .nf_ref = nf_ref, .deg = raw_deg, .nf_deg = nf_ref };
-
-            const L = realign.SliceLayout;
-            // Lag 27 trims one sample less (lagSamplesBack); -3000 is past
-            // half the reference, so ignored; 960 lands on the frame grid.
-            const cases = [_]struct { ref: L, deg: L }{
-                .{ .ref = .{ .pad = 0, .base = 9600, .len = 8000 }, .deg = .{ .pad = 0, .base = 9627, .len = 8100 } },
-                .{ .ref = .{ .pad = 0, .base = 20000, .len = 9000 }, .deg = .{ .pad = 0, .base = 19945, .len = 8000 } },
-                .{ .ref = .{ .pad = 0, .base = 9600, .len = 8000 }, .deg = .{ .pad = 0, .base = 9600, .len = 8000 } },
-                .{ .ref = .{ .pad = 700, .base = 0, .len = 7300 }, .deg = .{ .pad = 0, .base = 300, .len = 9000 } },
-                .{ .ref = .{ .pad = 0, .base = 30000, .len = 4000 }, .deg = .{ .pad = 0, .base = 27000, .len = 7000 } },
-                .{ .ref = .{ .pad = 0, .base = 40320, .len = 6000 }, .deg = .{ .pad = 0, .base = 41280, .len = 7000 } },
-                .{ .ref = .{ .pad = 0, .base = 1000, .len = 5000 }, .deg = .{ .pad = 400, .base = 1500, .len = 4000 } },
-            };
-            var want: [cases.len]accel.RealignOut = undefined;
-            var got: [cases.len]accel.RealignOut = undefined;
-            var jobs: [cases.len]accel.RealignJob = undefined;
-            var gpu_jobs: [cases.len]accel.RealignJob = undefined;
-            var made: usize = 0;
-            defer for (want[0..made], got[0..made]) |w, g| {
-                allocator.free(w.ref_spec);
-                allocator.free(w.deg_spec);
-                allocator.free(g.ref_spec);
-                allocator.free(g.deg_spec);
-            };
-            for (cases, &want, &got) |c, *w, *g| {
-                const room = NB * gammatone.numFrames(c.ref.pad + c.ref.len, ws, hop);
-                w.* = .{ .ref_spec = try allocator.alloc(f64, room), .deg_spec = try allocator.alloc(f64, room) };
-                g.* = .{ .ref_spec = try allocator.alloc(f64, room), .deg_spec = try allocator.alloc(f64, room) };
-                made += 1;
-            }
-            for (cases, 0..) |c, i| {
-                const job: accel.RealignJob = .{
-                    .ref = .{ .signal = ref, .layout = c.ref },
-                    .deg = .{ .signal = deg, .layout = c.deg },
-                    .raw = if (i % 3 != 1) raw else null,
-                    .out = &want[i],
-                };
-                jobs[i] = job;
-                gpu_jobs[i] = job;
-                gpu_jobs[i].out = &got[i];
-            }
-            try cpu.accelerator().realign(params, sr, &jobs);
-            try std.testing.expectEqual(@as(i64, 27), want[0].lag);
-            try std.testing.expectEqual(@as(i64, -3000), want[4].lag);
-            try std.testing.expectEqual(@as(i64, 960), want[5].lag);
-            // Both sides of case 5 on the full signals' grid: copied, not made.
-            const geo = realign.trimGeometry(6000, 7000, 960, sr);
-            try std.testing.expectEqual(@as(usize, 0), (40320 + geo.ref_off) % hop);
-            try std.testing.expectEqual(@as(i64, 0), @mod(41280 + geo.deg_off, @as(i64, hop)));
-
-            const had64 = ga.float64;
-            defer restoreLagPath(ga, had64);
-            for (lag_paths) |p| if (setLagPath(ga, had64, p)) {
-                for (&got) |*g| {
-                    g.lag = 1 << 40;
-                    g.num_frames = 1 << 40;
-                }
-                try ga.accelerator().realign(params, sr, &gpu_jobs);
-                for (want, got) |w, g| {
-                    try std.testing.expectEqual(w.lag, g.lag);
-                    try std.testing.expectEqual(w.num_frames, g.num_frames);
-                    const n = NB * w.num_frames;
-                    for (w.ref_spec[0..n], g.ref_spec[0..n]) |x, y| try std.testing.expect(@abs(y - x) <= 5e-5 * x);
-                    for (w.deg_spec[0..n], g.deg_spec[0..n]) |x, y| try std.testing.expect(@abs(y - x) <= 5e-5 * x);
-                }
-            };
-        }
-    }.run);
-}
-
-test "GPU spectrograms track the f64 CPU path in every band" {
-    try eachGpu(struct {
-        fn run(ga: *GpuAccel) !void {
-            const allocator = std.testing.allocator;
-            var prng = std.Random.DefaultPrng.init(11);
-            const r = prng.random();
-            // The 50 Hz band is the hard case: poles within ~4e-3 of z = 1 at 48 kHz.
-            inline for (.{ .{ 48000, 32, 24000.0 }, .{ 16000, 21, 8000.0 } }) |cfg| {
-                const sr: u32 = cfg[0];
-                const NB = cfg[1];
-                const f = gammatone.Filters(NB).init(sr, 50.0, cfg[2]);
-                const ws: usize = @intFromFloat(@round(@as(f64, @floatFromInt(sr)) * 0.08));
-                const hop = ws / 4;
-                const hann = try allocator.alloc(f64, ws);
-                defer allocator.free(hann);
-                gammatone.hannWindow(ws, hann);
-                const sig = try allocator.alloc(f64, sr);
-                defer allocator.free(sig);
-                for (sig, 0..) |*x, i| {
-                    const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(sr));
-                    x.* = 0.3 * @sin(2.0 * std.math.pi * 60.0 * t) + 0.05 * (r.float(f64) * 2 - 1);
-                }
-                const nf = gammatone.numFrames(sig.len, ws, hop);
-                const want = try allocator.alloc(f64, NB * nf);
-                defer allocator.free(want);
-                const got = try allocator.alloc(f64, NB * nf);
-                defer allocator.free(got);
-                const params: accel.SpecParams = .{ .bands = &f.bands, .window_size = ws, .hop_size = hop, .hann = hann };
-                var cpu: accel.Cpu = .{ .allocator = allocator };
-                defer cpu.deinit();
-                try cpu.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = want }});
-                try ga.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = got }});
-                for (want, got) |x, y| try std.testing.expect(@abs(y - x) <= 5e-5 * x);
+                out = 1 << 40;
+                try ga.hostLags(&jobs);
+                try std.testing.expectEqual(want, out);
             }
         }
     }.run);
@@ -1723,7 +961,7 @@ fn gammatoneError(ga: *GpuAccel, comptime precision: visqol.Precision, per_band:
     const params: accel.SpecParams = .{ .bands = &f.bands, .window_size = ws, .hop_size = hop, .hann = hann };
     var cpu: accel.Cpu = .{ .allocator = allocator };
     defer cpu.deinit();
-    try cpu.accelerator().spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = want }});
+    try cpu.spectrograms(params, &.{.{ .signal = sig, .num_frames = nf, .out = want }});
 
     const hi = try allocator.alloc(T, sig.len);
     defer allocator.free(hi);
