@@ -450,8 +450,9 @@ const Spirv = struct {
 fn emit(arena: std.mem.Allocator, w: *std.Io.Writer, structs: *Structs, metal_doc: ?Value, spirv_doc: Value, spv: []const u32, entry: []const u8, embed: Embed) !void {
     if (spv.len < 5 or spv[0] != 0x07230203) return error.BadSpirv;
     const s: Spirv = .{ .words = spv };
-    const float64 = s.float64();
-    if (float64 and metal_doc != null) {
+    // `.float64` entries have no Metal build.
+    const float64 = s.float64() or metal_doc == null;
+    if (s.float64() and metal_doc != null) {
         std.log.err("kernels using `double` have no Metal build", .{});
         return error.UnsupportedParameter;
     }
