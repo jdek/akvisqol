@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 const std = @import("std");
-const zimt = @import("zimt");
+pub const zimt = @import("zimt");
 
 const version = "0.1.0";
 
